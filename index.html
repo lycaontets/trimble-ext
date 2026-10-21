@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8"><title>JPF Échange IFC</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+#attrLegend input[type=color]{width:28px;padding:0;height:18px}#attrLegend input[type=checkbox]{width:auto}
+body{font-family:Segoe UI,Arial,sans-serif;font-size:13px;margin:8px;color:#222}
+h2{font-size:14px;margin:12px 0 4px;border-bottom:1px solid #ccc}
+button{margin:2px 0;padding:5px 8px;width:100%;cursor:pointer;background:#0063a3;color:#fff;border:0;border-radius:3px}
+button.sec{background:#666}
+#log{height:150px;overflow:auto;background:#f4f4f4;font:11px monospace;padding:4px;white-space:pre-wrap}
+.err{color:#b00}.ok{color:#070}
+#legend div,#attrLegend div{display:flex;align-items:center;gap:6px}.sw{width:14px;height:14px;display:inline-block;border:1px solid #999}
+select,input{width:100%;margin:2px 0}
+</style></head><body>
+<h2>Projet</h2>
+<div id="project">Connexion…</div>
+<ul id="models"></ul>
+<h2>Export</h2>
+<button id="btnSel">Exporter la sélection</button>
+<button id="btnAll">Exporter tout le modèle</button>
+<h2>Colorer par</h2>
+<button id="btnScan" class="sec">Analyser les attributs</button>
+<div id="scanProg"></div>
+<select id="attr"><option value="Nom">Nom</option><option value="Materiau">Matériau</option><option value="Classe">Classe IFC</option></select>
+<button id="btnColorBy">Appliquer</button>
+<button id="btnShowAll" class="sec">Tout afficher</button>
+<div id="attrLegend"></div>
+<h2>Colorer la sélection</h2>
+<input type="color" id="selColor" value="#ff0000">
+<button id="btnColorSel">Colorer la sélection</button>
+<h2>Import CSV/JSON</h2>
+<input type="file" id="file" accept=".csv,.json,.txt">
+<label>Action :</label>
+<select id="mode"><option value="color">Colorer</option><option value="select">Sélectionner</option><option value="isolate">Isoler</option></select>
+<button id="btnApply">Appliquer</button>
+<button id="btnReset" class="sec">Réinitialiser l'affichage</button>
+<div id="legend"></div>
+<h2>Journal</h2>
+<div id="log"></div>
+<script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+<script src="lib.js"></script>
+<script src="app.js"></script>
+</body></html>
