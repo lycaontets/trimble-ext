@@ -1,0 +1,7 @@
+{
+  "icon": "https://lycaontets.github.io/trimble-ext/icon.svg",
+  "title": "JPF Échange de données IFC",
+  "url": "https://lycaontets.github.io/trimble-ext/index.html",
+  "description": "Exporter/importer des données (GUID IFC, propriétés, couleurs) depuis la visionneuse 3D",
+  "enabled": true
+}
