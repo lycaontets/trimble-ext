@@ -310,13 +310,14 @@
       await refreshInfo();
     } catch (e) { err("Connexion", e); }
   }
-  $("btnSel").onclick = exportSelection; $("btnAll").onclick = exportAll;
-  $("file").onchange = () => { lastFile = $("file").files[0] || lastFile; };
-  $("btnApply").onclick = applyImport; $("btnRefreshConnect").onclick = refreshFromConnect;
-  $("btnOpenView").onclick = openStatusView;
-  $("autoRefresh").onchange = () => setAutoRefresh($("autoRefresh").checked);
-  $("btnReset").onclick = reset;
-  $("btnScan").onclick = scan; $("btnColorBy").onclick = colorBy; $("btnShowAll").onclick = showAll; $("btnColorSel").onclick = colorSelection;
+  const on = (id, ev, fn) => { const el = $(id); if (el) el[ev] = fn; };
+  on("btnSel", "onclick", exportSelection); on("btnAll", "onclick", exportAll);
+  on("file", "onchange", () => { lastFile = $("file").files[0] || lastFile; });
+  on("btnApply", "onclick", applyImport); on("btnRefreshConnect", "onclick", refreshFromConnect);
+  on("btnOpenView", "onclick", openStatusView);
+  on("autoRefresh", "onchange", () => setAutoRefresh($("autoRefresh").checked));
+  on("btnReset", "onclick", reset);
+  on("btnScan", "onclick", scan); on("btnColorBy", "onclick", colorBy); on("btnShowAll", "onclick", showAll); on("btnColorSel", "onclick", colorSelection);
   window.__TCAPP__ = { scan, colorBy, showAll, colorSelection, applyImport, refreshFromConnect, syncStatusView, openStatusView, exportAll, exportSelection, reset, setFile: f => (lastFile = f) };
   init();
 })();
