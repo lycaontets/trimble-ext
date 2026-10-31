@@ -69,6 +69,40 @@
     }
     return all;
   }
+
+  function statusViewName() {
+    const el = $("viewName");
+    return (el && el.value.trim()) || "Suprema Validé";
+  }
+  async function syncStatusView() {
+    if ($("syncView") && !$("syncView").checked) return;
+    if (!api || !api.view) { log("API vues indisponible", "err"); return; }
+    const name = statusViewName();
+    try {
+      const views = await api.view.getViews();
+      let v = (views || []).find(x => (x.name || x.title) === name);
+      if (!v) {
+        v = await api.view.createView({ name });
+        log(`Vue créée : ${name}`, "ok");
+      } else {
+        // Capture current colours/camera into the existing view
+        await api.view.updateView({ id: v.id });
+        log(`Vue mise à jour : ${name}`, "ok");
+      }
+    } catch (e) { err("Vue partagée", e); }
+  }
+  async function openStatusView() {
+    try {
+      if (!api || !api.view) throw new Error("API vues indisponible");
+      const name = statusViewName();
+      const views = await api.view.getViews();
+      const v = (views || []).find(x => (x.name || x.title) === name);
+      if (!v) throw new Error("Vue introuvable : " + name + " — cochez « Mettre à jour la vue » puis Actualiser d'abord");
+      await api.view.selectView(v.id);
+      log(`Vue ouverte : ${name}`, "ok");
+    } catch (e) { err("Ouvrir vue", e); }
+  }
+
   async function applySuprema(rows) {
     const models = await api.viewer.getModels("loaded"); const names = models.map(m => m.name || "");
     try { const p = await api.project.getProject(); if (p && p.name) names.push(p.name); } catch (e) { /* ignore */ }
@@ -95,6 +129,7 @@
       d.innerHTML = `<span class="sw" style="background:${VALIDE}"></span><span></span>`;
       d.lastChild.textContent = `Validé (${items.length} pièces, ${matched} N°)`; legend.appendChild(d);
       log(`${matched} N° trouvés, ${items.length} pièces traitées (${mode}) en Validé`, "ok");
+      if (mode === "color") await syncStatusView();
     }
     if (unmatched.length) log(`${unmatched.length} N° absents du modèle : ${unmatched.sort((a, b) => parseInt(a) - parseInt(b)).join(", ")}`);
   }
@@ -197,6 +232,7 @@
         await api.viewer.setObjectState({ modelObjectIds: allSel }, { visible: true });
       }
       log(`${found} objets trouvés et traités (${mode})`, "ok");
+      if (mode === "color") await syncStatusView();
     } catch (e) { err("Import", e); }
   }
   async function reset() {
@@ -277,9 +313,10 @@
   $("btnSel").onclick = exportSelection; $("btnAll").onclick = exportAll;
   $("file").onchange = () => { lastFile = $("file").files[0] || lastFile; };
   $("btnApply").onclick = applyImport; $("btnRefreshConnect").onclick = refreshFromConnect;
+  $("btnOpenView").onclick = openStatusView;
   $("autoRefresh").onchange = () => setAutoRefresh($("autoRefresh").checked);
   $("btnReset").onclick = reset;
   $("btnScan").onclick = scan; $("btnColorBy").onclick = colorBy; $("btnShowAll").onclick = showAll; $("btnColorSel").onclick = colorSelection;
-  window.__TCAPP__ = { scan, colorBy, showAll, colorSelection, applyImport, refreshFromConnect, exportAll, exportSelection, reset, setFile: f => (lastFile = f) };
+  window.__TCAPP__ = { scan, colorBy, showAll, colorSelection, applyImport, refreshFromConnect, syncStatusView, openStatusView, exportAll, exportSelection, reset, setFile: f => (lastFile = f) };
   init();
 })();
