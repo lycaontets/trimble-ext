@@ -89,13 +89,15 @@
     if (!api || !api.view) { log("API vues indisponible", "err"); return; }
     const name = statusViewName();
     try {
+      const bySg = (lastAtelier && lastAtelier.bySg) || loadAtelierCache();
+      if (bySg && $("sgLabels") && $("sgLabels").checked && !lastSgMarkupIds.length)
+        await placeSubgroupLabels(bySg);
       const views = await api.view.getViews();
       let v = (views || []).find(x => (x.name || x.title) === name);
       if (!v) {
         v = await api.view.createView({ name });
         log(`Vue créée : ${name}`, "ok");
       } else {
-        // Capture current colours/camera into the existing view
         await api.view.updateView({ id: v.id });
         log(`Vue mise à jour : ${name}`, "ok");
       }
@@ -119,68 +121,127 @@
     if (h.length !== 6) return { r: 0, g: 0, b: 0, a: 255 };
     return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: 255 };
   }
-  function bboxCenterMm(box) {
+  function bboxStatsMm(box) {
     if (!box) return null;
     const b = box.boundingBox || box;
     const min = b.min || b.Min, max = b.max || b.Max;
     if (!min || !max) return null;
-    const mx = (Number(min.x) + Number(max.x)) / 2;
-    const my = (Number(min.y) + Number(max.y)) / 2;
-    const mz = (Number(min.z) + Number(max.z)) / 2;
-    // Connect markups are in mm; model boxes are usually metres
-    const scale = (Math.abs(mx) < 1e5 && Math.abs(my) < 1e5 && Math.abs(mz) < 1e5) ? 1000 : 1;
-    return { x: mx * scale, y: my * scale, z: mz * scale };
+    const vals = [Number(min.x), Number(min.y), Number(min.z), Number(max.x), Number(max.y), Number(max.z)];
+    if (vals.some(v => Number.isNaN(v))) return null;
+    const scale = vals.every(v => Math.abs(v) < 1e5) ? 1000 : 1;
+    const mn = { x: Number(min.x) * scale, y: Number(min.y) * scale, z: Number(min.z) * scale };
+    const mx = { x: Number(max.x) * scale, y: Number(max.y) * scale, z: Number(max.z) * scale };
+    return {
+      min: mn, max: mx,
+      cx: (mn.x + mx.x) / 2, cy: (mn.y + mx.y) / 2, cz: (mn.z + mx.z) / 2,
+      topZ: Math.max(mn.z, mx.z)
+    };
+  }
+  function saveAtelierCache(bySg) {
+    try {
+      const slim = {};
+      for (const [k, r] of Object.entries(bySg || {})) {
+        slim[k] = { sg: r.sg || k, status: r.status, color: r.color, guids: (r.guids || []).slice(0, 120) };
+      }
+      sessionStorage.setItem("tcAtelierBySg", JSON.stringify(slim));
+    } catch (e) { /* ignore quota */ }
+  }
+  function loadAtelierCache() {
+    try {
+      const s = sessionStorage.getItem("tcAtelierBySg");
+      return s ? JSON.parse(s) : null;
+    } catch (e) { return null; }
   }
   async function clearSubgroupLabels() {
-    if (!lastSgMarkupIds.length) return;
     try {
       if (api && api.markup && api.markup.removeMarkups) {
-        await api.markup.removeMarkups(lastSgMarkupIds);
+        if (lastSgMarkupIds.length) await api.markup.removeMarkups(lastSgMarkupIds);
+        if (api.markup.getTextMarkups) {
+          const all = await api.markup.getTextMarkups();
+          const ours = (all || []).filter(m => m && m.id != null && /^Cadre\b/i.test(String(m.text || "")));
+          const ids = ours.map(m => m.id).filter(id => !lastSgMarkupIds.includes(id));
+          if (ids.length) await api.markup.removeMarkups(ids);
+        }
       }
     } catch (e) { /* ignore */ }
     lastSgMarkupIds = [];
   }
+  function markupAddFn() {
+    if (!api || !api.markup) return null;
+    return api.markup.addTextMarkup || api.markup.addTextMarkups || null;
+  }
   async function placeSubgroupLabels(bySg) {
     if (!$("sgLabels") || !$("sgLabels").checked) return;
-    if (!api || !api.markup || !api.markup.addTextMarkup) {
+    const addFn = markupAddFn();
+    if (!addFn) {
       log("API markups texte indisponible — libellés non placés", "err");
+      return;
+    }
+    bySg = bySg || (lastAtelier && lastAtelier.bySg) || loadAtelierCache();
+    if (!bySg || !Object.keys(bySg).length) {
+      log("Pas de sous-groupes HTML en mémoire — importer le HTML atelier d'abord", "err");
       return;
     }
     await clearSubgroupLabels();
     const models = await api.viewer.getModels("loaded");
-    const markups = [];
+    const placedIds = [];
+    let fail = 0;
     for (const row of Object.values(bySg)) {
-      if (!row.guids || !row.guids.length) continue;
-      let placed = false;
-      for (const m of models) {
-        for (const part of TCLib.chunk(row.guids, BATCH)) {
-          const rids = await api.viewer.convertToObjectRuntimeIds(m.id, part);
-          const ok = [];
-          rids.forEach((r, i) => { if (r !== undefined && r !== null && r >= 0) ok.push(r); });
-          if (!ok.length) continue;
-          const boxes = await api.viewer.getObjectBoundingBoxes(m.id, ok.slice(0, 30));
-          let sx = 0, sy = 0, sz = 0, n = 0;
-          for (const bx of boxes || []) {
-            const c = bboxCenterMm(bx);
-            if (!c) continue;
-            sx += c.x; sy += c.y; sz += c.z; n++;
+      if (!row.guids || !row.guids.length) { fail++; continue; }
+      let done = false;
+      try {
+        for (const m of models) {
+          if (done) break;
+          for (const part of TCLib.chunk(row.guids, BATCH)) {
+            const rids = await api.viewer.convertToObjectRuntimeIds(m.id, part);
+            const ok = [], guidsOk = [];
+            rids.forEach((r, i) => {
+              if (r !== undefined && r !== null && r >= 0) { ok.push(r); guidsOk.push(part[i]); }
+            });
+            if (!ok.length) continue;
+            const boxes = await api.viewer.getObjectBoundingBoxes(m.id, ok.slice(0, 40));
+            let sx = 0, sy = 0, sz = 0, topZ = -Infinity, n = 0, rid0 = ok[0], guid0 = guidsOk[0];
+            (boxes || []).forEach((bx, i) => {
+              const s = bboxStatsMm(bx);
+              if (!s) return;
+              sx += s.cx; sy += s.cy; sz += s.cz; if (s.topZ > topZ) topZ = s.topZ; n++;
+              if (i === 0 && bx && (bx.runtimeId != null || bx.id != null)) rid0 = bx.runtimeId != null ? bx.runtimeId : bx.id;
+            });
+            if (!n) continue;
+            const cx = sx / n, cy = sy / n, cz = sz / n;
+            if (!Number.isFinite(topZ)) topZ = cz;
+            const tip = {
+              type: "point", modelId: m.id, objectId: rid0, referenceObjectId: guid0,
+              positionX: cx, positionY: cy, positionZ: topZ
+            };
+            const textPos = {
+              type: "point", modelId: m.id, objectId: rid0, referenceObjectId: guid0,
+              positionX: cx, positionY: cy, positionZ: topZ + 2500
+            };
+            const payload = [{ text: row.sg, start: tip, end: textPos, color: hexToRgba(row.color || "#4D8DFF") }];
+            const added = await addFn.call(api.markup, payload);
+            const id = added && added[0] && added[0].id;
+            if (id != null) placedIds.push(id);
+            else log("Markup sans id pour " + row.sg);
+            done = true;
+            break;
           }
-          if (!n) continue;
-          const cx = sx / n, cy = sy / n, cz = sz / n;
-          const pick = { positionX: cx, positionY: cy, positionZ: cz, modelId: m.id, objectId: ok[0] };
-          const end = { positionX: cx, positionY: cy, positionZ: cz + 500, modelId: m.id, objectId: ok[0] };
-          markups.push({ text: row.sg, start: pick, end, color: hexToRgba(row.color) });
-          placed = true;
-          break;
         }
-        if (placed) break;
+      } catch (e) {
+        err("Libellé " + row.sg, e);
+        fail++;
+        continue;
       }
-      if (!placed) log("Libellé non placé (GUID introuvable) : " + row.sg);
+      if (!done) { log("Libellé non placé (GUID introuvable) : " + row.sg); fail++; }
     }
-    if (!markups.length) { log("Aucun libellé de sous-groupe à placer"); return; }
-    const added = await api.markup.addTextMarkup(markups);
-    lastSgMarkupIds = (added || []).map(x => x && x.id).filter(id => id !== undefined && id !== null);
-    log(lastSgMarkupIds.length + " libellés de sous-groupe placés", "ok");
+    lastSgMarkupIds = placedIds;
+    log(placedIds.length + " libellés de sous-groupe placés" + (fail ? ` (${fail} manqués)` : ""), placedIds.length ? "ok" : "err");
+  }
+  async function ensureSubgroupLabelsBeforeView() {
+    const bySg = (lastAtelier && lastAtelier.bySg) || loadAtelierCache();
+    if (!bySg) return;
+    if (!$("sgLabels") || !$("sgLabels").checked) return;
+    await placeSubgroupLabels(bySg);
   }
   async function applyAtelier(parsed) {
     lastAtelier = parsed;
@@ -219,6 +280,7 @@
     }
     log(`${found} objets colorés depuis le HTML (${mode})`, "ok");
     if (mode === "color") {
+      saveAtelierCache(parsed.bySg);
       await placeSubgroupLabels(parsed.bySg);
       await syncStatusView();
     }
@@ -250,7 +312,10 @@
       d.innerHTML = `<span class="sw" style="background:${VALIDE}"></span><span></span>`;
       d.lastChild.textContent = `Validé (${items.length} pièces, ${matched} N°)`; legend.appendChild(d);
       log(`${matched} N° trouvés, ${items.length} pièces traitées (${mode}) en Validé`, "ok");
-      if (mode === "color") await syncStatusView();
+      if (mode === "color") {
+        await ensureSubgroupLabelsBeforeView();
+        await syncStatusView();
+      }
     }
     if (unmatched.length) log(`${unmatched.length} N° absents du modèle : ${unmatched.sort((a, b) => parseInt(a) - parseInt(b)).join(", ")}`);
   }
@@ -435,6 +500,8 @@
         if (event === "viewer.onModelStateChanged") { scanned = null; refreshInfo(); }
       }, 30000);
       log("Connecté à Trimble Connect", "ok");
+      const cached = loadAtelierCache();
+      if (cached) { lastAtelier = { bySg: cached }; log("Sous-groupes HTML en cache : " + Object.keys(cached).length, "ok"); }
       await refreshInfo();
     } catch (e) { err("Connexion", e); }
   }
