@@ -38,3 +38,32 @@ a.strictEqual(p.bySg["Cadre CVT 18"].color, "#B9EFC4");
 a.ok(p.bySg["Cadre CVT 16"].guids.includes("GUID16"));
 a.ok(p.items.length >= 3);
 console.log("ATELIER HTML OK", Object.fromEntries(Object.entries(p.bySg).map(([k,v])=>[k,v.status])));
+
+// Unique sheets → production N° key + label at that key
+const htmlU = `<!DOCTYPE html><html><body>
+<script type="application/json" id="annotations">{"labels":[],"started":{"page-2":{"date":"2026-10-31T10:00:00"}},"validations":{"page-3":{"name":"Marc","date":"2026-10-31T11:00:00"}}}</script>
+<script type="application/json" class="piece-index">[
+ {"k":"190","n":1,"name":"Poteau","g":"G190","gs":["G190"],"sg":[],"u":1},
+ {"k":"191","n":1,"name":"Poteau","g":"G191","gs":["G191"],"sg":[],"u":1},
+ {"k":"192","n":2,"name":"Poteau","g":"G192a","gs":["G192a","G192b"],"sg":[],"u":1}
+]</script>
+<section class="page" id="page-2">
+  <div class="sheet-validation" data-validation-module="unique" data-progress-key="190" data-progress-label="190" data-sheet-title="Gymnase | Poteaux | 1 × N° prod. 190"></div>
+</section>
+<section class="page" id="page-3">
+  <div class="sheet-validation" data-validation-module="unique" data-progress-key="191" data-progress-label="191" data-sheet-title="Gymnase | Poteaux | 1 × N° prod. 191"></div>
+</section>
+<section class="page" id="page-4">
+  <div class="sheet-validation" data-validation-module="unique" data-progress-key="192" data-progress-label="2 × 192" data-sheet-title="Gymnase | Poteaux | 2 × N° prod. 192"></div>
+</section>
+</body></html>`;
+const u = L.parseAtelierHtml(htmlU);
+a.strictEqual(u.labelKind, "prod");
+a.strictEqual(u.bySg["190"].kind, "prod");
+a.strictEqual(u.bySg["190"].status, "started");
+a.strictEqual(u.bySg["191"].status, "done");
+a.strictEqual(u.bySg["192"].display, "2 × 192");
+a.ok(u.bySg["192"].guids.includes("G192a") && u.bySg["192"].guids.includes("G192b"));
+a.strictEqual(u.bySg["190"].color, "#FFE066");
+a.strictEqual(u.bySg["191"].color, "#B9EFC4");
+console.log("UNIQUE HTML OK", Object.fromEntries(Object.entries(u.bySg).map(([k,v])=>[k,{status:v.status,display:v.display,n:v.guids.length}])));

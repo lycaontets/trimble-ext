@@ -189,24 +189,58 @@
       .replace(/&quot;/gi, '"').replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
       .replace(/&amp;/gi, "&");
   }
-  /** Parse plans_atelier.html → sheet progress + GUID map by sub-group */
+  /** Parse plans_atelier.html → sheet progress + GUID map.
+   * Assembled / Timberframe → key = Sub-group (e.g. Cadre CVT 16).
+   * Unique → key = data-progress-key (production N°); label = data-progress-label.
+   * GUIDs from piece-index (sg / k) and, when present, mesh3d-data.group / productionNo.
+   */
   function parseAtelierHtml(html) {
     if (!html || typeof html !== "string") throw new Error("HTML vide");
     const ann = extractJsonScript(html, a => /\bid\s*=\s*["']annotations["']/i.test(a)) || {};
     const pieceIndex = extractJsonScript(html, a => /class\s*=\s*["'][^"']*\bpiece-index\b[^"']*["']/i.test(a)) || [];
-    if (!Array.isArray(pieceIndex)) throw new Error("piece-index invalide");
+    if (pieceIndex && !Array.isArray(pieceIndex)) throw new Error("piece-index invalide");
+    const pieces = Array.isArray(pieceIndex) ? pieceIndex : [];
 
     const guidsBySg = {};
-    for (const p of pieceIndex) {
+    const guidsByProd = {};
+    function addGuid(map, key, g) {
+      const k = String(key || "").trim();
+      const guid = String(g || "").trim();
+      if (!k || !guid) return;
+      const set = map[k] || (map[k] = []);
+      if (!set.includes(guid)) set.push(guid);
+    }
+    for (const p of pieces) {
       const sgs = Array.isArray(p.sg) ? p.sg : (p.sg ? [p.sg] : []);
       const guids = [];
       if (p.g) guids.push(String(p.g).trim());
       if (Array.isArray(p.gs)) for (const g of p.gs) if (g) guids.push(String(g).trim());
-      for (const sg of sgs) {
-        const key = String(sg || "").trim();
-        if (!key) continue;
-        const set = guidsBySg[key] || (guidsBySg[key] = []);
-        for (const g of guids) if (g && !set.includes(g)) set.push(g);
+      // Attached parts (ferrules etc.) when listed
+      if (Array.isArray(p.d)) for (const g of p.d) if (g) guids.push(String(g).trim());
+      for (const sg of sgs) for (const g of guids) addGuid(guidsBySg, sg, g);
+      const prod = String(p.k || "").trim();
+      if (prod) for (const g of guids) addGuid(guidsByProd, prod, g);
+    }
+
+    // mesh3d-data (Vue complète / sheets): group = Sub-group (assembled) or N° (unique)
+    const meshRe = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+    let mm;
+    while ((mm = meshRe.exec(html))) {
+      if (!/class\s*=\s*["'][^"']*\bmesh3d-data\b/i.test(mm[1] || "")) continue;
+      let data;
+      try { data = JSON.parse(String(mm[2] || "").trim()); } catch (e) { continue; }
+      const meshes = (data && data.meshes) || [];
+      for (const m of meshes) {
+        if (!m || !m.guid) continue;
+        const g = String(m.guid).trim();
+        const group = String(m.group || "").trim();
+        const pn = String(m.productionNo || "").trim();
+        if (group) {
+          // Assembled: group is Cadre… ; Unique: group often equals N°
+          if (/cadre|ossature|assembl/i.test(group) || /[a-zA-Z]{3,}/.test(group)) addGuid(guidsBySg, group, g);
+          else addGuid(guidsByProd, group, g);
+        }
+        if (pn && pn !== "0" && pn !== "0.0") addGuid(guidsByProd, pn, g);
       }
     }
 
@@ -220,6 +254,14 @@
       const idm = attrs.match(/\bid\s*=\s*["']([^"']+)["']/i);
       const pageId = idm ? idm[1] : "";
       if (!pageId) continue;
+      const svm = body.match(/<div\b[^>]*\bclass\s*=\s*["'][^"']*\bsheet-validation\b[^"']*["'][^>]*>/i);
+      const svTag = svm ? svm[0] : "";
+      const modM = svTag.match(/data-validation-module\s*=\s*["']([^"']+)["']/i);
+      const module = modM ? modM[1].toLowerCase() : "";
+      const pkM = svTag.match(/data-progress-key\s*=\s*["']([^"']*)["']/i);
+      const plM = svTag.match(/data-progress-label\s*=\s*["']([^"']*)["']/i);
+      let progressKey = pkM ? decodeHtmlEntities(pkM[1]).trim() : "";
+      let progressLabel = plM ? decodeHtmlEntities(plM[1]).trim() : "";
       let sg = "";
       const sgm = body.match(/data-key\s*=\s*["']Sub-group["'][^>]*data-value\s*=\s*["']([^"']*)["']/i)
         || body.match(/data-value\s*=\s*["']([^"']*)["'][^>]*data-key\s*=\s*["']Sub-group["']/i);
@@ -227,35 +269,79 @@
       let title = "";
       const tm = body.match(/data-sheet-title\s*=\s*["']([^"']*)["']/i);
       if (tm) title = decodeHtmlEntities(tm[1]).trim();
-      if (!sg && title) {
-        const parts = title.split("|").map(x => x.trim()).filter(Boolean);
-        if (parts.length) sg = parts[parts.length - 1];
+      const isUnique = module === "unique" || !!progressKey;
+      let key = "";
+      let kind = "subgroup";
+      let display = "";
+      if (isUnique) {
+        kind = "prod";
+        key = progressKey;
+        display = progressLabel || progressKey;
+        if (!key && title) {
+          const mProd = title.match(/N[°º]\s*prod\.?\s*([^\s|]+(?:\s+[A-Za-z])?)/i)
+            || title.match(/N[°º]\s*production\s*:?\s*([^\s|]+(?:\s+[A-Za-z])?)/i);
+          if (mProd) key = mProd[1].trim();
+        }
+        if (!display) display = key;
+      } else {
+        kind = "subgroup";
+        key = sg;
+        if (!key && title) {
+          const parts = title.split("|").map(x => x.trim()).filter(Boolean);
+          if (parts.length) key = parts[parts.length - 1];
+        }
+        display = key;
       }
-      sheets.push({ pageId, sg, title, status: sheetStatusOf(ann, pageId) });
+      if (!key) key = title || pageId;
+      if (!display) display = key;
+      sheets.push({ pageId, sg: key, display, kind, title, module: module || (isUnique ? "unique" : ""), status: sheetStatusOf(ann, pageId) });
     }
 
     const bySg = {};
     for (const sh of sheets) {
-      const key = sh.sg || sh.title || sh.pageId;
+      const key = sh.sg;
       if (!key) continue;
-      const row = bySg[key] || (bySg[key] = { sg: key, statuses: [], guids: guidsBySg[key] ? guidsBySg[key].slice() : [], pages: [] });
+      const fromSg = guidsBySg[key] || [];
+      const fromProd = guidsByProd[key] || [];
+      const seed = sh.kind === "prod"
+        ? (fromProd.length ? fromProd : fromSg)
+        : (fromSg.length ? fromSg : fromProd);
+      const row = bySg[key] || (bySg[key] = {
+        sg: key,
+        display: sh.display || key,
+        kind: sh.kind || "subgroup",
+        statuses: [],
+        guids: seed.slice(),
+        pages: []
+      });
+      if (sh.display && (!row.display || row.display === key)) row.display = sh.display;
+      if (sh.kind) row.kind = sh.kind;
       row.statuses.push(sh.status);
       row.pages.push(sh.pageId);
+      for (const g of seed) if (!row.guids.includes(g)) row.guids.push(g);
     }
+    // Orphan subgroups from piece-index (no sheet) — keep as todo
     for (const [sg, guids] of Object.entries(guidsBySg)) {
-      if (!bySg[sg]) bySg[sg] = { sg, statuses: ["todo"], guids: guids.slice(), pages: [] };
+      if (!bySg[sg]) bySg[sg] = { sg, display: sg, kind: "subgroup", statuses: ["todo"], guids: guids.slice(), pages: [] };
     }
     for (const row of Object.values(bySg)) {
       row.status = aggSheetStatus(row.statuses);
       row.color = SHEET_STATUS[row.status].color;
       row.label = SHEET_STATUS[row.status].label;
+      if (!row.display) row.display = row.sg;
+      if (!row.kind) row.kind = "subgroup";
     }
 
     const items = [];
     for (const row of Object.values(bySg)) {
-      for (const guid of row.guids) items.push({ guid, color: row.color, value: row.sg + " — " + row.label });
+      for (const guid of row.guids) {
+        items.push({ guid, color: row.color, value: (row.display || row.sg) + " — " + row.label, key: row.sg, kind: row.kind });
+      }
     }
-    return { annotations: ann, sheets, bySg, items, pieceIndexCount: pieceIndex.length };
+    const kind = Object.values(bySg).some(r => r.kind === "prod") && !Object.values(bySg).some(r => r.kind === "subgroup")
+      ? "prod"
+      : (Object.values(bySg).some(r => r.kind === "prod") ? "mixed" : "subgroup");
+    return { annotations: ann, sheets, bySg, items, pieceIndexCount: pieces.length, labelKind: kind };
   }
   function isAtelierHtml(text, name) {
     if (name && /\.html?$/i.test(name)) return true;

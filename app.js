@@ -141,7 +141,7 @@
     try {
       const slim = {};
       for (const [k, r] of Object.entries(bySg || {})) {
-        slim[k] = { sg: r.sg || k, status: r.status, color: r.color, guids: (r.guids || []).slice(0, 120) };
+        slim[k] = { sg: r.sg || k, display: r.display || r.sg || k, kind: r.kind || "subgroup", status: r.status, color: r.color, guids: (r.guids || []).slice(0, 120) };
       }
       sessionStorage.setItem("tcAtelierBySg", JSON.stringify(slim));
     } catch (e) { /* ignore quota */ }
@@ -171,7 +171,7 @@
         if (lastSgMarkupIds.length) await api.markup.removeMarkups(lastSgMarkupIds);
         if (api.markup.getTextMarkups) {
           const all = await api.markup.getTextMarkups();
-          const ours = (all || []).filter(m => m && m.id != null && /^Cadre\b/i.test(String(m.text || "")));
+          const ours = (all || []).filter(m => m && m.id != null && (m._tcAtelier || /^Cadre\b/i.test(String(m.text || "")) || /^\d+[A-Za-z]?\b/.test(String(m.text || "")) || /×/.test(String(m.text || ""))));
           const ids = ours.map(m => m.id).filter(id => !lastSgMarkupIds.includes(id));
           if (ids.length) await api.markup.removeMarkups(ids);
         }
@@ -194,7 +194,7 @@
     if (!$("sgLabels") || !$("sgLabels").checked) return;
     bySg = bySg || (lastAtelier && lastAtelier.bySg) || loadAtelierCache();
     if (!bySg || !Object.keys(bySg).length) {
-      log("Pas de sous-groupes HTML en mémoire — cliquez Appliquer sur le HTML atelier", "err");
+      log("Pas de libellés HTML en mémoire — cliquez Appliquer sur le HTML atelier", "err");
       return;
     }
     const addFn = markupAddFn();
@@ -238,7 +238,7 @@
               icons.push({
                 id: icons.length + 1,
                 position: { x: cx / 1000, y: cy / 1000, z: (topZ + 1800) / 1000 },
-                iconPath: badgeDataUrl(row.sg, bg),
+                iconPath: badgeDataUrl(row.display || row.sg, bg),
                 size: 1.2
               });
               iconN++;
@@ -253,7 +253,7 @@
                 type: "point", modelId: m.id, objectId: rid0, referenceObjectId: guid0,
                 positionX: cx, positionY: cy, positionZ: topZ + 2500
               };
-              const added = await addFn.call(api.markup, [{ text: row.sg, start: tip, end: textPos, color: hexToRgba(bg) }]);
+              const added = await addFn.call(api.markup, [{ text: (row.display || row.sg), start: tip, end: textPos, color: hexToRgba(bg) }]);
               const id = added && added[0] && added[0].id;
               if (id != null) { placedIds.push(id); markupN++; }
             }
@@ -262,11 +262,11 @@
           }
         }
       } catch (e) {
-        err("Libellé " + row.sg, e);
+        err("Libellé " + (row.display || row.sg), e);
         fail++;
         continue;
       }
-      if (!done) { log("Libellé non placé (GUID introuvable) : " + row.sg); fail++; }
+      if (!done) { log("Libellé non placé (GUID introuvable) : " + (row.display || row.sg)); fail++; }
     }
     if (icons.length && canIcon) {
       try {
@@ -305,18 +305,67 @@
     const rows = Object.values(parsed.bySg || {});
     const counts = { todo: 0, started: 0, done: 0 };
     rows.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
-    log(`HTML atelier : ${parsed.sheets.length} feuilles, ${parsed.pieceIndexCount} pièces index — Validé ${counts.done}, En cours ${counts.started}, Pas commencé ${counts.todo}`);
+    const kindTxt = parsed.labelKind === "prod" ? "N° production" : (parsed.labelKind === "mixed" ? "sous-groupe + N°" : "sous-groupe");
+    log(`HTML atelier : ${parsed.sheets.length} feuilles (${kindTxt}), ${parsed.pieceIndexCount} pièces index — Validé ${counts.done}, En cours ${counts.started}, Pas commencé ${counts.todo}`);
+
+    // Unique sheets with no piece-index: resolve GUIDs from model production numbers
+    const needProd = rows.some(r => r.kind === "prod" && !(r.guids && r.guids.length));
+    if (needProd) {
+      log("Résolution N° production depuis le modèle…");
+      const scanned = await scanAll();
+      const { map } = TCLib.buildProdMap(scanned);
+      let filled = 0;
+      for (const r of rows) {
+        if (r.kind !== "prod" || (r.guids && r.guids.length)) continue;
+        const key = TCLib.ppCsvKey(r.sg);
+        const hits = map[key] || map[String(r.sg).trim()] || [];
+        // Prefer GUIDs: scan again via convert — store runtime→guid through properties if present
+        for (const h of hits) {
+          // h = {modelId, id}; we need GUID — fetch one batch later; stash runtime for now
+          if (!r._runtimes) r._runtimes = [];
+          r._runtimes.push(h);
+        }
+        if (hits.length) filled++;
+      }
+      // Convert runtime ids to GUIDs
+      for (const r of rows) {
+        if (!r._runtimes || !r._runtimes.length) continue;
+        const byModel = {};
+        for (const h of r._runtimes) (byModel[h.modelId] = byModel[h.modelId] || []).push(h.id);
+        const guids = r.guids || (r.guids = []);
+        for (const [mid, ids] of Object.entries(byModel)) {
+          for (const part of TCLib.chunk(ids, BATCH)) {
+            const gids = await api.viewer.convertToObjectIds(mid, part);
+            (gids || []).forEach(g => { if (g && !guids.includes(g)) guids.push(g); });
+          }
+        }
+        delete r._runtimes;
+      }
+      // Rebuild items after fill
+      parsed.items = [];
+      for (const row of rows) {
+        for (const guid of row.guids || []) {
+          parsed.items.push({ guid, color: row.color, value: (row.display || row.sg) + " — " + row.label, key: row.sg, kind: row.kind });
+        }
+      }
+      log(`N° résolus depuis le modèle : ${filled} feuilles`, filled ? "ok" : "err");
+    }
+
     const items = parsed.items || [];
-    if (!items.length) { log("Aucun GUID dans piece-index", "err"); return; }
-    const groups = TCLib.buildGroups(items);
+    if (!items.length) { log("Aucun GUID (piece-index / N° production) trouvé", "err"); return; }
+
     const models = await api.viewer.getModels("loaded");
     const mode = $("mode").value, allSel = [], legend = $("legend"); legend.innerHTML = "";
     let found = 0;
-    for (const [color, g] of Object.entries(groups)) {
+    // Colour + legend per sheet key (subgroup or production N°)
+    const sorted = rows.slice().sort((a, b) => String(a.display || a.sg).localeCompare(String(b.display || b.sg), "fr", { numeric: true }));
+    for (const row of sorted) {
+      const guids = row.guids || [];
+      if (!guids.length) continue;
       const mois = [];
       for (const m of models) {
         const rids = [];
-        for (const part of TCLib.chunk(g.guids, BATCH)) {
+        for (const part of TCLib.chunk(guids, BATCH)) {
           const r = await api.viewer.convertToObjectRuntimeIds(m.id, part);
           r.forEach(x => { if (x !== undefined && x !== null && x >= 0) rids.push(x); });
         }
@@ -324,10 +373,11 @@
       }
       const cnt = mois.reduce((s, m) => s + m.objectRuntimeIds.length, 0); found += cnt;
       allSel.push(...mois);
-      if (cnt && mode === "color") await api.viewer.setObjectState({ modelObjectIds: mois }, { color });
+      if (cnt && mode === "color") await api.viewer.setObjectState({ modelObjectIds: mois }, { color: row.color });
       const d = document.createElement("div");
-      d.innerHTML = `<span class="sw" style="background:${color}"></span><span></span>`;
-      d.lastChild.textContent = `${g.label} (${cnt}/${g.guids.length})`; legend.appendChild(d);
+      d.innerHTML = `<span class="sw" style="background:${row.color}"></span><span></span>`;
+      d.lastChild.textContent = `${row.display || row.sg} — ${row.label} (${cnt}/${guids.length})`;
+      legend.appendChild(d);
     }
     if (!found) { log("Aucun GUID du HTML trouvé dans les modèles chargés", "err"); return; }
     if (mode === "select") await api.viewer.setSelection({ modelObjectIds: allSel }, "set");
