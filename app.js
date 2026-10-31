@@ -152,18 +152,41 @@
       return s ? JSON.parse(s) : null;
     } catch (e) { return null; }
   }
-  function escapeXml(s) {
-    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  }
   function badgeDataUrl(text, bg) {
+    // PNG (not SVG): Trimble addIcon / shared-view save throw InvalidStateError on SVG data URLs
     const label = String(text || "");
-    const w = Math.max(160, 24 + label.length * 10);
-    const h = 32;
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
-      `<rect x="0.5" y="0.5" width="${w - 1}" height="${h - 1}" rx="5" ry="5" fill="${bg || "#4D8DFF"}" stroke="#222" stroke-width="1"/>` +
-      `<text x="${w / 2}" y="${h / 2 + 5}" text-anchor="middle" font-family="Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111">${escapeXml(label)}</text>` +
-      `</svg>`;
-    return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+    const scale = 2;
+    const w = Math.max(160, 28 + label.length * 11);
+    const h = 36;
+    const canvas = document.createElement("canvas");
+    canvas.width = w * scale;
+    canvas.height = h * scale;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(scale, scale);
+    const fill = bg || "#4D8DFF";
+    const r = 6;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(0.5, 0.5, w - 1, h - 1, r);
+    else {
+      const x = 0.5, y = 0.5, rw = w - 1, rh = h - 1;
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + rw, y, x + rw, y + rh, r);
+      ctx.arcTo(x + rw, y + rh, x, y + rh, r);
+      ctx.arcTo(x, y + rh, x, y, r);
+      ctx.arcTo(x, y, x + rw, y, r);
+      ctx.closePath();
+    }
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.strokeStyle = "#222";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = "#111";
+    ctx.font = "700 16px Segoe UI, Arial, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, w / 2, h / 2 + 0.5);
+    return canvas.toDataURL("image/png");
   }
   async function clearSubgroupLabels() {
     try {
@@ -239,9 +262,8 @@
                 id: icons.length + 1,
                 position: { x: cx / 1000, y: cy / 1000, z: (topZ + 1800) / 1000 },
                 iconPath: badgeDataUrl(row.display || row.sg, bg),
-                size: 1.2
+                size: 1.8
               });
-              iconN++;
             }
             // Text markup too (saved into the shared view)
             if (addFn) {
@@ -272,15 +294,18 @@
       try {
         await api.viewer.addIcon(icons);
         lastSgIcons = icons.slice();
+        iconN = icons.length;
       } catch (e) {
         err("Icônes libellés", e);
-        // fallback: try one-by-one
+        // fallback: try one-by-one (PNG badges avoid InvalidStateError on SVG decode)
         lastSgIcons = [];
         for (const ic of icons) {
           try { await api.viewer.addIcon(ic); lastSgIcons.push(ic); } catch (e2) { err("Icône " + ic.id, e2); }
         }
         iconN = lastSgIcons.length;
       }
+    } else {
+      iconN = 0;
     }
     lastSgMarkupIds = placedIds;
     log(`Libellés HTML : ${iconN} pastilles` + (markupN ? `, ${markupN} markups` : "") + (fail ? ` (${fail} manqués)` : ""), (iconN || markupN) ? "ok" : "err");
