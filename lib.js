@@ -94,6 +94,63 @@
     return { modelObjectIds: Object.entries(by).map(([modelId, objectRuntimeIds]) => ({ modelId, objectRuntimeIds })) };
   }
   function chunk(a, n) { const r = []; for (let i = 0; i < a.length; i += n) r.push(a.slice(i, i + n)); return r; }
-  g.TCLib = { parseCSV, normalizeImport, buildGroups, flattenObject, toCSV, chunk, csvEscape, attributeKeys, groupByAttr, toSelector };
+
+  // ---- Suprema / N° production (identique à Pièce par pièce) ----
+  const PP_STOP = new Set("plans plan atelier vue vues complete cadre cadres zone structure structures poteau poteaux poutre poutres solive solives consoles console taille dessus avec pour dans bois sup1 sup2 suprema niveau etage".split(" "));
+  const PROD_NO_KEYS = ["no. production list", "no production list", "production", "productionnumber", "production_number", "n°prod", "numéro_production", "numero_production", "mark", "tag", "piece_mark", "assembly_mark", "bauteilnummer", "pos_nr", "nummer", "number"];
+  const fold = s => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const normKey = s => fold(s).replace(/[^a-z0-9°]/g, "");
+  function ppCsvKey(raw) {
+    let s = String(raw == null ? "" : raw).trim().replace(/[.,]0+$/, "");
+    const m = s.match(/(\d+)(?:\s*([A-Za-z]))?\s*$/);
+    if (!m) return null;
+    return String(Number(m[1])) + (m[2] ? " " + m[2].toUpperCase() : "");
+  }
+  function isSupremaRows(rows) {
+    if (!rows.length) return false;
+    const r = rows[0];
+    if (findKey(r, ["guid", "ifcguid", "globalid", "ifc_guid"])) return false;
+    return !!Object.keys(r).find(k => fold(k) === "piece");
+  }
+  function siteTokens(names) {
+    const set = new Set();
+    for (const n of names) for (const w of fold(n).replace(/\.[a-z0-9]{2,5}$/, "").split(/[^a-z0-9]+/)) {
+      if (!w) continue;
+      if (/^\d+$/.test(w)) { if (w.length >= 5) set.add(w); }
+      else if (w.length >= 4 && !PP_STOP.has(w)) set.add(w);
+    }
+    return [...set];
+  }
+  // -> {done:{key:{count,date}}, kept, skipped, noKey}
+  function ppCsvParse(rows, tokens) {
+    const r0 = rows[0] || {}, ks = Object.keys(r0);
+    const kP = ks.find(k => fold(k) === "piece");
+    if (!kP) throw new Error("Colonne Pièce introuvable");
+    const kS = ks.find(k => fold(k) === "structure"), kD = ks.find(k => fold(k) === "data" || fold(k) === "date");
+    const done = {}; let kept = 0, skipped = 0, noKey = 0;
+    for (const r of rows) {
+      if (kS && tokens && tokens.length) { const st = fold(r[kS]); if (!tokens.some(t => st.includes(t))) { skipped++; continue; } }
+      const key = ppCsvKey(r[kP]); if (!key) { noKey++; continue; }
+      kept++; const d = done[key] = done[key] || { count: 0, date: "" }; d.count++;
+      if (kD && r[kD] && (!d.date || r[kD] > d.date)) d.date = r[kD];
+    }
+    return { done, kept, skipped, noKey };
+  }
+  // N° production d'un objet (props aplaties) ; ordre de priorité = ifc_parser.py
+  function prodNoOf(o) {
+    const props = [];
+    for (const ps of o.properties || []) for (const p of ps.properties || []) if (p.value !== undefined && p.value !== null && String(p.value).trim() !== "") props.push([normKey(p.name), p.name, ps.name, p.value]);
+    for (const k of PROD_NO_KEYS) { const nk = normKey(k); const hit = props.find(p => p[0] === nk); if (hit) return { value: hit[3], prop: hit[2] + "." + hit[1] }; }
+    for (const k of PROD_NO_KEYS) { const nk = normKey(k); const hit = props.find(p => p[0].includes(nk) || (p[0] && nk.includes(p[0]))); if (hit) return { value: hit[3], prop: hit[2] + "." + hit[1] }; }
+    return null;
+  }
+  // -> {key: [{modelId,id}]}, props:{name:count}
+  function buildProdMap(objs) {
+    const map = {}, props = {};
+    for (const o of objs) { const r = prodNoOf(o); if (!r) continue; const k = ppCsvKey(r.value); if (!k) continue;
+      (map[k] = map[k] || []).push({ modelId: o.modelId, id: o.id }); props[r.prop] = (props[r.prop] || 0) + 1; }
+    return { map, props };
+  }
+  g.TCLib = { ppCsvKey, isSupremaRows, siteTokens, ppCsvParse, prodNoOf, buildProdMap, parseCSV, normalizeImport, buildGroups, flattenObject, toCSV, chunk, csvEscape, attributeKeys, groupByAttr, toSelector };
   if (typeof module !== "undefined") module.exports = g.TCLib;
 })(typeof window !== "undefined" ? window : globalThis);

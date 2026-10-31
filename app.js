@@ -53,12 +53,55 @@
       const j = JSON.parse(text); rows = Array.isArray(j) ? j : (j.items || j.objects || []);
       rows = rows.map(r => Object.assign({}, r, r.guid && !r.GUID ? { GUID: r.guid } : {}));
     } else rows = TCLib.parseCSV(text);
+    if (TCLib.isSupremaRows(rows)) return { suprema: rows };
     return TCLib.normalizeImport(rows);
+  }
+  const VALIDE = "#00AA00";
+  async function scanAll() {
+    const mos = await api.viewer.getObjects(); const all = [];
+    const total = mos.reduce((s, m) => s + m.objects.length, 0); let done = 0;
+    for (const m of mos) for (const part of TCLib.chunk(m.objects.map(o => o.id), BATCH)) {
+      const props = await api.viewer.getObjectProperties(m.modelId, part);
+      props.forEach(p => all.push(Object.assign({ modelId: m.modelId }, p)));
+      done += part.length; $("scanProg").textContent = `Analyse : ${done}/${total}`;
+    }
+    return all;
+  }
+  async function applySuprema(rows) {
+    const models = await api.viewer.getModels("loaded"); const names = models.map(m => m.name || "");
+    try { const p = await api.project.getProject(); if (p && p.name) names.push(p.name); } catch (e) { /* ignore */ }
+    const tokens = TCLib.siteTokens(names);
+    log(`CSV Suprema : ${rows.length} lignes — jetons chantier : ${tokens.join(", ") || "(aucun, pas de filtre)"}`);
+    const res = TCLib.ppCsvParse(rows, tokens);
+    log(`Structure : ${res.kept} lignes gardées, ${res.skipped} ignorées (autre chantier)${res.noKey ? `, ${res.noKey} sans N°` : ""} — ${Object.keys(res.done).length} N° distincts`);
+    if (!scanned) scanned = await scanAll();
+    const { map, props } = TCLib.buildProdMap(scanned);
+    log(`N° production lus via : ${Object.entries(props).map(([k, n]) => `${k} (${n})`).join(", ") || "aucune propriété trouvée"} — ${Object.keys(map).length} N° dans le modèle`);
+    const items = [], unmatched = []; let matched = 0;
+    for (const [k, d] of Object.entries(res.done)) {
+      const objs = map[k]; if (!objs) { unmatched.push(k); continue; }
+      matched++; items.push(...objs.slice(0, Math.min(d.count, objs.length)));
+    }
+    const legend = $("legend"); legend.innerHTML = "";
+    if (!items.length) { log("Aucun N° du CSV trouvé dans le modèle", "err"); }
+    else {
+      const sel = TCLib.toSelector(items).modelObjectIds, mode = $("mode").value;
+      if (mode === "color") await api.viewer.setObjectState({ modelObjectIds: sel }, { color: VALIDE });
+      if (mode === "select") await api.viewer.setSelection({ modelObjectIds: sel }, "set");
+      if (mode === "isolate") { await api.viewer.setObjectState(undefined, { visible: false }); await api.viewer.setObjectState({ modelObjectIds: sel }, { visible: true }); }
+      const d = document.createElement("div");
+      d.innerHTML = `<span class="sw" style="background:${VALIDE}"></span><span></span>`;
+      d.lastChild.textContent = `Validé (${items.length} pièces, ${matched} N°)`; legend.appendChild(d);
+      log(`${matched} N° trouvés, ${items.length} pièces traitées (${mode}) en Validé`, "ok");
+    }
+    if (unmatched.length) log(`${unmatched.length} N° absents du modèle : ${unmatched.sort((a, b) => parseInt(a) - parseInt(b)).join(", ")}`);
   }
   async function applyImport() {
     try {
       const f = $("file").files[0] || lastFile; if (!f) { log("Choisir un fichier", "err"); return; }
-      const items = await readImport(f); log(`${items.length} lignes avec GUID lues`);
+      const items = await readImport(f);
+      if (items.suprema) { await applySuprema(items.suprema); return; }
+      log(`${items.length} lignes avec GUID lues`);
       const groups = TCLib.buildGroups(items);
       const models = await api.viewer.getModels("loaded");
       const mode = $("mode").value, allSel = [], legend = $("legend"); legend.innerHTML = "";

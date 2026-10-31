@@ -40,3 +40,11 @@ L'analyse charge les propriétés de tous les objets : sur un gros modèle (diza
 
 ## Test local (sans Trimble)
 `npm install && node test/mock-test.js` (API simulée avec jsdom).
+
+## Import Suprema (N° de production)
+Un CSV Suprema (`Data;Structure;Pièce;W;T;L;Temps`, sans colonne GUID) est détecté automatiquement.
+Comme « Pièce par pièce » (ifc-shop-drawings) :
+- N° = nombre final de `Pièce` (+ lettre éventuelle) : `V03_ 3035` → `3035`, `218 A` → `218 A`.
+- Filtre `Structure` : seules les lignes contenant un jeton du chantier (mots ≥4 lettres hors liste d'arrêt, ou nombres ≥5 chiffres, tirés des noms des modèles chargés et du projet) sont gardées.
+- Le N° des objets est lu dans les propriétés (ordre : `No. production list`, `Production…`, `N°prod`, `Mark`, `Tag`, `Piece_mark`, `Pos_nr`, `Nummer`, `Number`).
+- Les pièces trouvées passent en vert `#00AA00` (Validé) ; plusieurs lignes du même N° = quantité (plafonnée au nombre dans le modèle). Mode Sélectionner/Isoler et Réinitialiser fonctionnent aussi.
