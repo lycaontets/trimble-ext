@@ -29,11 +29,13 @@ select,input{width:100%;margin:2px 0}
 <input type="color" id="selColor" value="#ff0000">
 <button id="btnColorSel">Colorer la sélection</button>
 <h2>Import CSV/JSON</h2>
-<div style="font-size:11px;color:#555">CSV avec GUID → couleurs/valeurs. CSV Suprema (Data;Structure;Pièce…) → pièces Validées en vert.</div>
+<div style="font-size:11px;color:#555">CSV avec GUID → couleurs/valeurs. CSV Suprema (Data;Structure;Pièce…) → pièces Validées en vert. « Actualiser couleurs » lit ECHALLENS.csv depuis Connect (pas de rechargement de page). Lancez WatchCSV.bat sur le PC pour pousser le CSV.</div>
 <input type="file" id="file" accept=".csv,.json,.txt">
 <label>Action :</label>
 <select id="mode"><option value="color">Colorer</option><option value="select">Sélectionner</option><option value="isolate">Isoler</option></select>
 <button id="btnApply">Appliquer</button>
+<button id="btnRefreshConnect">Actualiser couleurs (Connect)</button>
+<label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px"><input type="checkbox" id="autoRefresh" style="width:auto"> Auto (30 s) — couleurs seulement</label>
 <button id="btnReset" class="sec">Réinitialiser l'affichage</button>
 <div id="legend"></div>
 <h2>Journal</h2>

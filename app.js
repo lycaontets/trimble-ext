@@ -2,7 +2,9 @@
 (function () {
   const BATCH = 500;
   const $ = id => document.getElementById(id);
-  let api = null, lastFile = null;
+  let api = null, lastFile = null, lastCsvText = null, lastCsvName = "ECHALLENS.csv";
+  const CONNECT_CSV = { projectId: "ehtiK26Yuww", parentId: "nw77yMWl-eU", fileName: "ECHALLENS.csv", base: "https://app21.connect.trimble.com/tc/api/2.0" };
+  let autoTimer = null;
   function log(msg, cls) {
     const d = document.createElement("div"); d.className = cls || "";
     d.textContent = new Date().toLocaleTimeString("fr-CH") + " " + msg; $("log").appendChild(d); $("log").scrollTop = 1e9;
@@ -96,6 +98,71 @@
     }
     if (unmatched.length) log(`${unmatched.length} N° absents du modèle : ${unmatched.sort((a, b) => parseInt(a) - parseInt(b)).join(", ")}`);
   }
+
+  async function getAccessToken() {
+    if (!api || !api.extension || !api.extension.requestPermission) throw new Error("Workspace API: requestPermission indisponible");
+    const t = await api.extension.requestPermission("accesstoken");
+    if (!t) throw new Error("Jeton Connect refusé");
+    return typeof t === "string" ? t : (t.token || t.accessToken || t.access_token);
+  }
+  async function connectFetch(path) {
+    const tok = await getAccessToken();
+    const r = await fetch(CONNECT_CSV.base + path, { headers: { Authorization: "Bearer " + tok, Accept: "application/json" } });
+    const text = await r.text();
+    let body; try { body = text ? JSON.parse(text) : null; } catch (_) { body = text; }
+    if (!r.ok) throw new Error((body && (body.message || body.detail || body.title)) || ("HTTP " + r.status));
+    return body;
+  }
+  async function downloadConnectCsv() {
+    let items = await connectFetch(`/folders/${CONNECT_CSV.parentId}/items`);
+    if (items && !Array.isArray(items)) items = items.data || items.items || items.files || [];
+    const f = (items || []).find(it => (it.type === "FILE" || String(it.type).toUpperCase() === "FILE") && it.name === CONNECT_CSV.fileName);
+    if (!f) throw new Error("Fichier " + CONNECT_CSV.fileName + " introuvable dans Connect (lancez le watcher)");
+    const tok = await getAccessToken();
+    let url = f.downloadURL || f.downloadUrl || f.url;
+    if (!url) {
+      const dl = await connectFetch(`/files/fs/${f.id}/downloadurl`);
+      url = (typeof dl === "string" ? dl : (dl && (dl.url || dl.downloadURL || dl.downloadUrl))) || null;
+    }
+    if (!url) throw new Error("Pas d'URL de téléchargement pour " + CONNECT_CSV.fileName);
+    const r = await fetch(url, { redirect: "follow" });
+    if (!r.ok) throw new Error("Téléchargement CSV HTTP " + r.status);
+    const text = await r.text();
+    lastCsvText = text; lastCsvName = f.name;
+    return { text, name: f.name, id: f.id, versionId: f.versionId };
+  }
+  async function applyCsvText(text, name) {
+    lastCsvText = text; lastCsvName = name || lastCsvName;
+    let rows;
+    if (/^\s*[[{]/.test(text)) {
+      const j = JSON.parse(text); rows = Array.isArray(j) ? j : (j.items || j.objects || []);
+      rows = rows.map(r => Object.assign({}, r, r.guid && !r.GUID ? { GUID: r.guid } : {}));
+      const items = TCLib.normalizeImport(rows);
+      // reuse GUID path via temp
+      lastFile = new File([text], name || "import.json", { type: "application/json" });
+      await applyImport();
+      return;
+    }
+    rows = TCLib.parseCSV(text);
+    if (TCLib.isSupremaRows(rows)) { await applySuprema(rows); return; }
+    lastFile = new File([text], name || "import.csv", { type: "text/csv" });
+    await applyImport();
+  }
+  async function refreshFromConnect() {
+    try {
+      log("Actualisation depuis Connect…");
+      const d = await downloadConnectCsv();
+      await applyCsvText(d.text, d.name);
+      log("Couleurs actualisées (pas de rechargement de page)", "ok");
+    } catch (e) { err("Actualiser Connect", e); }
+  }
+  function setAutoRefresh(on) {
+    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+    if (!on) return;
+    autoTimer = setInterval(() => refreshFromConnect(), 30000);
+    log("Auto-refresh couleurs toutes les 30 s", "ok");
+  }
+
   async function applyImport() {
     try {
       const f = $("file").files[0] || lastFile; if (!f) { log("Choisir un fichier", "err"); return; }
@@ -208,8 +275,11 @@
     } catch (e) { err("Connexion", e); }
   }
   $("btnSel").onclick = exportSelection; $("btnAll").onclick = exportAll;
-  $("btnApply").onclick = applyImport; $("btnReset").onclick = reset;
+  $("file").onchange = () => { lastFile = $("file").files[0] || lastFile; };
+  $("btnApply").onclick = applyImport; $("btnRefreshConnect").onclick = refreshFromConnect;
+  $("autoRefresh").onchange = () => setAutoRefresh($("autoRefresh").checked);
+  $("btnReset").onclick = reset;
   $("btnScan").onclick = scan; $("btnColorBy").onclick = colorBy; $("btnShowAll").onclick = showAll; $("btnColorSel").onclick = colorSelection;
-  window.__TCAPP__ = { scan, colorBy, showAll, colorSelection, applyImport, exportAll, exportSelection, reset, setFile: f => (lastFile = f) };
+  window.__TCAPP__ = { scan, colorBy, showAll, colorSelection, applyImport, refreshFromConnect, exportAll, exportSelection, reset, setFile: f => (lastFile = f) };
   init();
 })();
