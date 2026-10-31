@@ -3,6 +3,7 @@
   const BATCH = 500;
   const $ = id => document.getElementById(id);
   let api = null, lastFile = null, lastCsvText = null, lastCsvName = "ECHALLENS.csv";
+  let lastAtelier = null, lastSgMarkupIds = [];
   const CONNECT_CSV = { projectId: "ehtiK26Yuww", parentId: "9hDaTpAXRng", fileName: "ECHALLENS.csv", base: "https://app21.connect.trimble.com/tc/api/2.0" };
   let autoTimer = null;
   function log(msg, cls) {
@@ -50,6 +51,9 @@
   }
   async function readImport(file) {
     const text = await file.text();
+    if (TCLib.isAtelierHtml(text, file.name)) {
+      return { atelier: TCLib.parseAtelierHtml(text) };
+    }
     let rows;
     if (/\.json$/i.test(file.name) || /^\s*[[{]/.test(text)) {
       const j = JSON.parse(text); rows = Array.isArray(j) ? j : (j.items || j.objects || []);
@@ -103,7 +107,118 @@
     } catch (e) { err("Ouvrir vue", e); }
   }
 
-  async function applySuprema(rows) {
+
+  function hexToRgba(hex) {
+    const h = String(hex || "").replace("#", "");
+    if (h.length !== 6) return { r: 0, g: 0, b: 0, a: 255 };
+    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: 255 };
+  }
+  function bboxCenterMm(box) {
+    if (!box) return null;
+    const b = box.boundingBox || box;
+    const min = b.min || b.Min, max = b.max || b.Max;
+    if (!min || !max) return null;
+    const mx = (Number(min.x) + Number(max.x)) / 2;
+    const my = (Number(min.y) + Number(max.y)) / 2;
+    const mz = (Number(min.z) + Number(max.z)) / 2;
+    // Connect markups are in mm; model boxes are usually metres
+    const scale = (Math.abs(mx) < 1e5 && Math.abs(my) < 1e5 && Math.abs(mz) < 1e5) ? 1000 : 1;
+    return { x: mx * scale, y: my * scale, z: mz * scale };
+  }
+  async function clearSubgroupLabels() {
+    if (!lastSgMarkupIds.length) return;
+    try {
+      if (api && api.markup && api.markup.removeMarkups) {
+        await api.markup.removeMarkups(lastSgMarkupIds);
+      }
+    } catch (e) { /* ignore */ }
+    lastSgMarkupIds = [];
+  }
+  async function placeSubgroupLabels(bySg) {
+    if (!$("sgLabels") || !$("sgLabels").checked) return;
+    if (!api || !api.markup || !api.markup.addTextMarkup) {
+      log("API markups texte indisponible — libellés non placés", "err");
+      return;
+    }
+    await clearSubgroupLabels();
+    const models = await api.viewer.getModels("loaded");
+    const markups = [];
+    for (const row of Object.values(bySg)) {
+      if (!row.guids || !row.guids.length) continue;
+      let placed = false;
+      for (const m of models) {
+        for (const part of TCLib.chunk(row.guids, BATCH)) {
+          const rids = await api.viewer.convertToObjectRuntimeIds(m.id, part);
+          const ok = [];
+          rids.forEach((r, i) => { if (r !== undefined && r !== null && r >= 0) ok.push(r); });
+          if (!ok.length) continue;
+          const boxes = await api.viewer.getObjectBoundingBoxes(m.id, ok.slice(0, 30));
+          let sx = 0, sy = 0, sz = 0, n = 0;
+          for (const bx of boxes || []) {
+            const c = bboxCenterMm(bx);
+            if (!c) continue;
+            sx += c.x; sy += c.y; sz += c.z; n++;
+          }
+          if (!n) continue;
+          const cx = sx / n, cy = sy / n, cz = sz / n;
+          const pick = { positionX: cx, positionY: cy, positionZ: cz, modelId: m.id, objectId: ok[0] };
+          const end = { positionX: cx, positionY: cy, positionZ: cz + 500, modelId: m.id, objectId: ok[0] };
+          markups.push({ text: row.sg, start: pick, end, color: hexToRgba(row.color) });
+          placed = true;
+          break;
+        }
+        if (placed) break;
+      }
+      if (!placed) log("Libellé non placé (GUID introuvable) : " + row.sg);
+    }
+    if (!markups.length) { log("Aucun libellé de sous-groupe à placer"); return; }
+    const added = await api.markup.addTextMarkup(markups);
+    lastSgMarkupIds = (added || []).map(x => x && x.id).filter(id => id !== undefined && id !== null);
+    log(lastSgMarkupIds.length + " libellés de sous-groupe placés", "ok");
+  }
+  async function applyAtelier(parsed) {
+    lastAtelier = parsed;
+    const rows = Object.values(parsed.bySg || {});
+    const counts = { todo: 0, started: 0, done: 0 };
+    rows.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
+    log(`HTML atelier : ${parsed.sheets.length} feuilles, ${parsed.pieceIndexCount} pièces index — Validé ${counts.done}, En cours ${counts.started}, Pas commencé ${counts.todo}`);
+    const items = parsed.items || [];
+    if (!items.length) { log("Aucun GUID dans piece-index", "err"); return; }
+    const groups = TCLib.buildGroups(items);
+    const models = await api.viewer.getModels("loaded");
+    const mode = $("mode").value, allSel = [], legend = $("legend"); legend.innerHTML = "";
+    let found = 0;
+    for (const [color, g] of Object.entries(groups)) {
+      const mois = [];
+      for (const m of models) {
+        const rids = [];
+        for (const part of TCLib.chunk(g.guids, BATCH)) {
+          const r = await api.viewer.convertToObjectRuntimeIds(m.id, part);
+          r.forEach(x => { if (x !== undefined && x !== null && x >= 0) rids.push(x); });
+        }
+        if (rids.length) mois.push({ modelId: m.id, objectRuntimeIds: rids });
+      }
+      const cnt = mois.reduce((s, m) => s + m.objectRuntimeIds.length, 0); found += cnt;
+      allSel.push(...mois);
+      if (cnt && mode === "color") await api.viewer.setObjectState({ modelObjectIds: mois }, { color });
+      const d = document.createElement("div");
+      d.innerHTML = `<span class="sw" style="background:${color}"></span><span></span>`;
+      d.lastChild.textContent = `${g.label} (${cnt}/${g.guids.length})`; legend.appendChild(d);
+    }
+    if (!found) { log("Aucun GUID du HTML trouvé dans les modèles chargés", "err"); return; }
+    if (mode === "select") await api.viewer.setSelection({ modelObjectIds: allSel }, "set");
+    if (mode === "isolate") {
+      await api.viewer.setObjectState(undefined, { visible: false });
+      await api.viewer.setObjectState({ modelObjectIds: allSel }, { visible: true });
+    }
+    log(`${found} objets colorés depuis le HTML (${mode})`, "ok");
+    if (mode === "color") {
+      await placeSubgroupLabels(parsed.bySg);
+      await syncStatusView();
+    }
+  }
+
+    async function applySuprema(rows) {
     const models = await api.viewer.getModels("loaded"); const names = models.map(m => m.name || "");
     try { const p = await api.project.getProject(); if (p && p.name) names.push(p.name); } catch (e) { /* ignore */ }
     const tokens = TCLib.siteTokens(names);
@@ -202,6 +317,7 @@
     try {
       const f = $("file").files[0] || lastFile; if (!f) { log("Choisir un fichier", "err"); return; }
       const items = await readImport(f);
+      if (items.atelier) { await applyAtelier(items.atelier); return; }
       if (items.suprema) { await applySuprema(items.suprema); return; }
       log(`${items.length} lignes avec GUID lues`);
       const groups = TCLib.buildGroups(items);
@@ -237,6 +353,7 @@
   }
   async function reset() {
     try {
+      await clearSubgroupLabels();
       await api.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
       await api.viewer.setSelection({ modelObjectIds: [] }, "set");
       $("legend").innerHTML = ""; $("attrLegend").innerHTML = ""; log("Affichage réinitialisé", "ok");
@@ -318,6 +435,6 @@
   on("autoRefresh", "onchange", () => setAutoRefresh($("autoRefresh").checked));
   on("btnReset", "onclick", reset);
   on("btnScan", "onclick", scan); on("btnColorBy", "onclick", colorBy); on("btnShowAll", "onclick", showAll); on("btnColorSel", "onclick", colorSelection);
-  window.__TCAPP__ = { scan, colorBy, showAll, colorSelection, applyImport, refreshFromConnect, syncStatusView, openStatusView, exportAll, exportSelection, reset, setFile: f => (lastFile = f) };
+  window.__TCAPP__ = { scan, colorBy, showAll, colorSelection, applyImport, applyAtelier, refreshFromConnect, syncStatusView, openStatusView, exportAll, exportSelection, reset, setFile: f => (lastFile = f) };
   init();
 })();
