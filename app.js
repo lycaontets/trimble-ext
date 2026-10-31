@@ -3,7 +3,7 @@
   const BATCH = 500;
   const $ = id => document.getElementById(id);
   let api = null, lastFile = null, lastCsvText = null, lastCsvName = "ECHALLENS.csv";
-  let lastAtelier = null, lastSgMarkupIds = [];
+  let lastAtelier = null, lastSgMarkupIds = [], lastSgIcons = [], lastColorMode = null;
   const CONNECT_CSV = { projectId: "ehtiK26Yuww", parentId: "9hDaTpAXRng", fileName: "ECHALLENS.csv", base: "https://app21.connect.trimble.com/tc/api/2.0" };
   let autoTimer = null;
   function log(msg, cls) {
@@ -152,6 +152,19 @@
       return s ? JSON.parse(s) : null;
     } catch (e) { return null; }
   }
+  function escapeXml(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function badgeDataUrl(text, bg) {
+    const label = String(text || "");
+    const w = Math.max(160, 24 + label.length * 10);
+    const h = 32;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+      `<rect x="0.5" y="0.5" width="${w - 1}" height="${h - 1}" rx="5" ry="5" fill="${bg || "#4D8DFF"}" stroke="#222" stroke-width="1"/>` +
+      `<text x="${w / 2}" y="${h / 2 + 5}" text-anchor="middle" font-family="Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111">${escapeXml(label)}</text>` +
+      `</svg>`;
+    return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  }
   async function clearSubgroupLabels() {
     try {
       if (api && api.markup && api.markup.removeMarkups) {
@@ -165,6 +178,13 @@
       }
     } catch (e) { /* ignore */ }
     lastSgMarkupIds = [];
+    try {
+      if (api && api.viewer && api.viewer.removeIcon) {
+        if (lastSgIcons.length) await api.viewer.removeIcon(lastSgIcons);
+        else await api.viewer.removeIcon();
+      }
+    } catch (e) { /* ignore */ }
+    lastSgIcons = [];
   }
   function markupAddFn() {
     if (!api || !api.markup) return null;
@@ -172,20 +192,22 @@
   }
   async function placeSubgroupLabels(bySg) {
     if (!$("sgLabels") || !$("sgLabels").checked) return;
-    const addFn = markupAddFn();
-    if (!addFn) {
-      log("API markups texte indisponible — libellés non placés", "err");
-      return;
-    }
     bySg = bySg || (lastAtelier && lastAtelier.bySg) || loadAtelierCache();
     if (!bySg || !Object.keys(bySg).length) {
-      log("Pas de sous-groupes HTML en mémoire — importer le HTML atelier d'abord", "err");
+      log("Pas de sous-groupes HTML en mémoire — cliquez Appliquer sur le HTML atelier", "err");
+      return;
+    }
+    const addFn = markupAddFn();
+    const canIcon = !!(api && api.viewer && api.viewer.addIcon);
+    if (!addFn && !canIcon) {
+      log("API libellés indisponible (markup/icon)", "err");
       return;
     }
     await clearSubgroupLabels();
     const models = await api.viewer.getModels("loaded");
     const placedIds = [];
-    let fail = 0;
+    const icons = [];
+    let fail = 0, iconN = 0, markupN = 0;
     for (const row of Object.values(bySg)) {
       if (!row.guids || !row.guids.length) { fail++; continue; }
       let done = false;
@@ -210,19 +232,31 @@
             if (!n) continue;
             const cx = sx / n, cy = sy / n, cz = sz / n;
             if (!Number.isFinite(topZ)) topZ = cz;
-            const tip = {
-              type: "point", modelId: m.id, objectId: rid0, referenceObjectId: guid0,
-              positionX: cx, positionY: cy, positionZ: topZ
-            };
-            const textPos = {
-              type: "point", modelId: m.id, objectId: rid0, referenceObjectId: guid0,
-              positionX: cx, positionY: cy, positionZ: topZ + 2500
-            };
-            const payload = [{ text: row.sg, start: tip, end: textPos, color: hexToRgba(row.color || "#4D8DFF") }];
-            const added = await addFn.call(api.markup, payload);
-            const id = added && added[0] && added[0].id;
-            if (id != null) placedIds.push(id);
-            else log("Markup sans id pour " + row.sg);
+            const bg = row.color || "#4D8DFF";
+            // Pill icon (meters) — same look as HTML status chips
+            if (canIcon) {
+              icons.push({
+                id: icons.length + 1,
+                position: { x: cx / 1000, y: cy / 1000, z: (topZ + 1800) / 1000 },
+                iconPath: badgeDataUrl(row.sg, bg),
+                size: 1.2
+              });
+              iconN++;
+            }
+            // Text markup too (saved into the shared view)
+            if (addFn) {
+              const tip = {
+                type: "point", modelId: m.id, objectId: rid0, referenceObjectId: guid0,
+                positionX: cx, positionY: cy, positionZ: topZ
+              };
+              const textPos = {
+                type: "point", modelId: m.id, objectId: rid0, referenceObjectId: guid0,
+                positionX: cx, positionY: cy, positionZ: topZ + 2500
+              };
+              const added = await addFn.call(api.markup, [{ text: row.sg, start: tip, end: textPos, color: hexToRgba(bg) }]);
+              const id = added && added[0] && added[0].id;
+              if (id != null) { placedIds.push(id); markupN++; }
+            }
             done = true;
             break;
           }
@@ -234,8 +268,22 @@
       }
       if (!done) { log("Libellé non placé (GUID introuvable) : " + row.sg); fail++; }
     }
+    if (icons.length && canIcon) {
+      try {
+        await api.viewer.addIcon(icons);
+        lastSgIcons = icons.slice();
+      } catch (e) {
+        err("Icônes libellés", e);
+        // fallback: try one-by-one
+        lastSgIcons = [];
+        for (const ic of icons) {
+          try { await api.viewer.addIcon(ic); lastSgIcons.push(ic); } catch (e2) { err("Icône " + ic.id, e2); }
+        }
+        iconN = lastSgIcons.length;
+      }
+    }
     lastSgMarkupIds = placedIds;
-    log(placedIds.length + " libellés de sous-groupe placés" + (fail ? ` (${fail} manqués)` : ""), placedIds.length ? "ok" : "err");
+    log(`Libellés HTML : ${iconN} pastilles` + (markupN ? `, ${markupN} markups` : "") + (fail ? ` (${fail} manqués)` : ""), (iconN || markupN) ? "ok" : "err");
   }
   async function ensureSubgroupLabelsBeforeView() {
     const bySg = (lastAtelier && lastAtelier.bySg) || loadAtelierCache();
@@ -245,6 +293,15 @@
   }
   async function applyAtelier(parsed) {
     lastAtelier = parsed;
+    lastColorMode = "atelier";
+    // Keep HTML colours — Auto CSV would overwrite them every 30 s
+    if ($("autoRefresh") && $("autoRefresh").checked) {
+      $("autoRefresh").checked = false;
+      setAutoRefresh(false);
+      log("Auto CSV désactivé pour garder les couleurs / libellés HTML", "ok");
+    }
+    if ($("viewName") && (!$("viewName").value.trim() || $("viewName").value.trim() === "Suprema Validé"))
+      $("viewName").value = "Avancement feuilles";
     const rows = Object.values(parsed.bySg || {});
     const counts = { todo: 0, started: 0, done: 0 };
     rows.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
@@ -287,6 +344,7 @@
   }
 
     async function applySuprema(rows) {
+    lastColorMode = "suprema";
     const models = await api.viewer.getModels("loaded"); const names = models.map(m => m.name || "");
     try { const p = await api.project.getProject(); if (p && p.name) names.push(p.name); } catch (e) { /* ignore */ }
     const tokens = TCLib.siteTokens(names);
@@ -371,6 +429,15 @@
   }
   async function refreshFromConnect() {
     try {
+      if (lastColorMode === "atelier") {
+        log("Mode HTML actif — Actualiser CSV ignoré (recliquez Appliquer sur le HTML, ou Réinitialiser puis Actualiser)");
+        const bySg = (lastAtelier && lastAtelier.bySg) || loadAtelierCache();
+        if (bySg) {
+          await placeSubgroupLabels(bySg);
+          await syncStatusView();
+        }
+        return;
+      }
       log("Actualisation depuis Connect…");
       const d = await downloadConnectCsv();
       await applyCsvText(d.text, d.name);
@@ -425,6 +492,7 @@
   async function reset() {
     try {
       await clearSubgroupLabels();
+      lastColorMode = null;
       await api.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
       await api.viewer.setSelection({ modelObjectIds: [] }, "set");
       $("legend").innerHTML = ""; $("attrLegend").innerHTML = ""; log("Affichage réinitialisé", "ok");
