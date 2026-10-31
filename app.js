@@ -368,16 +368,20 @@
       if (needSg) {
         const { map, props } = TCLib.buildSubGroupMap(scanned);
         log(`Sub-group lus via : ${Object.entries(props).map(([k, n]) => k + " (" + n + ")").join(", ") || "aucune"} — ${Object.keys(map).length} groupes`);
+        let replaced = 0;
         for (const r of rows) {
           if ((r.kind || "subgroup") === "prod") continue;
           const hits = map[r.sg] || map[String(r.display || "").trim()] || [];
           if (!hits.length) continue;
-          const guids = r.guids || (r.guids = []);
-          const before = guids.length;
-          for (const g of await runtimesToGuids(hits)) if (!guids.includes(g)) guids.push(g);
-          addedSg += guids.length - before;
+          // Model Sub-group is authoritative: shared posts/diagonals in HTML belong to one Cadre only
+          const modelGuids = await runtimesToGuids(hits);
+          if (!modelGuids.length) continue;
+          const before = (r.guids || []).length;
+          r.guids = modelGuids;
+          replaced++;
+          addedSg += Math.max(0, modelGuids.length - before);
         }
-        log(`Sub-group modèle : +${addedSg} GUIDs ajoutés aux Cadres`, addedSg ? "ok" : "");
+        log(`Sub-group modèle : ${replaced} Cadres recalés (${addedSg >= 0 ? "+" + addedSg : addedSg} GUIDs net)`, replaced ? "ok" : "err");
       }
       parsed.items = [];
       for (const row of rows) {
@@ -393,15 +397,33 @@
     const models = await api.viewer.getModels("loaded");
     const mode = $("mode").value, allSel = [], legend = $("legend"); legend.innerHTML = "";
     let found = 0;
-    // Colour + legend per sheet key (subgroup or production N°)
+    // One colour per GUID: Sub-group sheets beat orphans; done > started > todo
     const statusRank = { todo: 0, started: 1, done: 2 };
+    const owner = new Map(); // guid -> row
     const sorted = rows.slice().sort((a, b) => {
+      const pa = (a.pages && a.pages.length) ? 1 : 0, pb = (b.pages && b.pages.length) ? 1 : 0;
+      if (pa !== pb) return pa - pb;
       const d = (statusRank[a.status] || 0) - (statusRank[b.status] || 0);
       if (d) return d;
       return String(a.display || a.sg).localeCompare(String(b.display || b.sg), "fr", { numeric: true });
     });
     for (const row of sorted) {
-      const guids = row.guids || [];
+      for (const g of row.guids || []) {
+        const prev = owner.get(g);
+        if (!prev) { owner.set(g, row); continue; }
+        const betterSheet = (row.pages && row.pages.length ? 1 : 0) - (prev.pages && prev.pages.length ? 1 : 0);
+        const betterStatus = (statusRank[row.status] || 0) - (statusRank[prev.status] || 0);
+        if (betterSheet > 0 || (betterSheet === 0 && betterStatus >= 0)) owner.set(g, row);
+      }
+    }
+    const byRow = new Map();
+    for (const [g, row] of owner) {
+      const list = byRow.get(row) || (byRow.set(row, []), byRow.get(row));
+      list.push(g);
+    }
+    const legendRows = rows.slice().sort((a, b) => String(a.display || a.sg).localeCompare(String(b.display || b.sg), "fr", { numeric: true }));
+    for (const row of legendRows) {
+      const guids = byRow.get(row) || [];
       if (!guids.length) continue;
       const mois = [];
       for (const m of models) {
@@ -417,7 +439,7 @@
       if (cnt && mode === "color") await api.viewer.setObjectState({ modelObjectIds: mois }, { color: row.color });
       const d = document.createElement("div");
       d.innerHTML = `<span class="sw" style="background:${row.color}"></span><span></span>`;
-      d.lastChild.textContent = `${row.display || row.sg} — ${row.label} (${cnt}/${guids.length})`;
+      d.lastChild.textContent = `${row.display || row.sg} — ${row.label} (${cnt}/${(row.guids || []).length})`;
       legend.appendChild(d);
     }
     if (!found) { log("Aucun GUID du HTML trouvé dans les modèles chargés", "err"); return; }

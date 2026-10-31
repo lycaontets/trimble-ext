@@ -239,11 +239,10 @@
     }
     for (const p of pieces) {
       const sgs = Array.isArray(p.sg) ? p.sg : (p.sg ? [p.sg] : []);
+      // Timber mains only — p.d (quincaillerie) is shared across Cadres and muddies colours
       const guids = [];
       if (p.g) guids.push(String(p.g).trim());
       if (Array.isArray(p.gs)) for (const g of p.gs) if (g) guids.push(String(g).trim());
-      // Attached parts (ferrules etc.) when listed
-      if (Array.isArray(p.d)) for (const g of p.d) if (g) guids.push(String(g).trim());
       for (const sg of sgs) for (const g of guids) addGuid(guidsBySg, sg, g);
       const prod = String(p.k || "").trim();
       if (prod) for (const g of guids) addGuid(guidsByProd, prod, g);
