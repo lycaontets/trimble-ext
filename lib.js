@@ -151,6 +151,33 @@
       (map[k] = map[k] || []).push({ modelId: o.modelId, id: o.id }); props[r.prop] = (props[r.prop] || 0) + 1; }
     return { map, props };
   }
+  const SUBGROUP_KEYS = ["sub-group", "subgroup", "sous-groupe", "sousgroupe", "sub_group", "group", "groupe"];
+  function subGroupOf(o) {
+    const props = [];
+    for (const ps of o.properties || []) for (const p of ps.properties || [])
+      if (p.value !== undefined && p.value !== null && String(p.value).trim() !== "")
+        props.push([normKey(p.name), p.name, ps.name, String(p.value).trim()]);
+    for (const k of SUBGROUP_KEYS) {
+      const nk = normKey(k);
+      const hit = props.find(p => p[0] === nk);
+      if (hit) return { value: hit[3], prop: hit[2] + "." + hit[1] };
+    }
+    // Prefer exact "Sub-group" style names containing subgroup
+    const hit2 = props.find(p => p[0] === "subgroup" || p[0] === "sousgroupe" || (p[0].includes("subgroup") && !p[0].includes("type")));
+    if (hit2) return { value: hit2[3], prop: hit2[2] + "." + hit2[1] };
+    return null;
+  }
+  // -> { "Cadre CVT 19": [{modelId,id}, ...] }, props:{name:count}
+  function buildSubGroupMap(objs) {
+    const map = {}, props = {};
+    for (const o of objs) {
+      const r = subGroupOf(o); if (!r) continue;
+      const k = String(r.value || "").trim(); if (!k) continue;
+      (map[k] = map[k] || []).push({ modelId: o.modelId, id: o.id });
+      props[r.prop] = (props[r.prop] || 0) + 1;
+    }
+    return { map, props };
+  }
   // ---- Plans atelier HTML (Avancement des feuilles) ----
   // Colours match ifc-shop-drawings viewer.js SP_FILL / pg-* bars
   const SHEET_STATUS = {
@@ -349,6 +376,6 @@
     return /class=["'][^"']*\bpiece-index\b/i.test(text) || /id=["']annotations["']/i.test(text);
   }
 
-  g.TCLib = { ppCsvKey, isSupremaRows, siteTokens, ppCsvParse, prodNoOf, buildProdMap, parseCSV, normalizeImport, buildGroups, flattenObject, toCSV, chunk, csvEscape, attributeKeys, groupByAttr, toSelector, SHEET_STATUS, parseAtelierHtml, isAtelierHtml, sheetStatusOf, aggSheetStatus };
+  g.TCLib = { ppCsvKey, isSupremaRows, siteTokens, ppCsvParse, prodNoOf, buildProdMap, subGroupOf, buildSubGroupMap, parseCSV, normalizeImport, buildGroups, flattenObject, toCSV, chunk, csvEscape, attributeKeys, groupByAttr, toSelector, SHEET_STATUS, parseAtelierHtml, isAtelierHtml, sheetStatusOf, aggSheetStatus };
   if (typeof module !== "undefined") module.exports = g.TCLib;
 })(typeof window !== "undefined" ? window : globalThis);

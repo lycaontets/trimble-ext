@@ -141,7 +141,7 @@
     try {
       const slim = {};
       for (const [k, r] of Object.entries(bySg || {})) {
-        slim[k] = { sg: r.sg || k, display: r.display || r.sg || k, kind: r.kind || "subgroup", status: r.status, color: r.color, guids: (r.guids || []).slice(0, 120) };
+        slim[k] = { sg: r.sg || k, display: r.display || r.sg || k, kind: r.kind || "subgroup", status: r.status, color: r.color, guids: (r.guids || []).slice(0, 4000) };
       }
       sessionStorage.setItem("tcAtelierBySg", JSON.stringify(slim));
     } catch (e) { /* ignore quota */ }
@@ -333,47 +333,58 @@
     const kindTxt = parsed.labelKind === "prod" ? "N° production" : (parsed.labelKind === "mixed" ? "sous-groupe + N°" : "sous-groupe");
     log(`HTML atelier : ${parsed.sheets.length} feuilles (${kindTxt}), ${parsed.pieceIndexCount} pièces index — Validé ${counts.done}, En cours ${counts.started}, Pas commencé ${counts.todo}`);
 
-    // Unique sheets with no piece-index: resolve GUIDs from model production numbers
+    // Fill gaps from the loaded model: Sub-group for Cadres, N° for Unique
     const needProd = rows.some(r => r.kind === "prod" && !(r.guids && r.guids.length));
-    if (needProd) {
-      log("Résolution N° production depuis le modèle…");
+    const needSg = rows.some(r => (r.kind || "subgroup") !== "prod");
+    if (needProd || needSg) {
+      log("Résolution Sub-group / N° depuis le modèle…");
       const scanned = await scanAll();
-      const { map } = TCLib.buildProdMap(scanned);
-      let filled = 0;
-      for (const r of rows) {
-        if (r.kind !== "prod" || (r.guids && r.guids.length)) continue;
-        const key = TCLib.ppCsvKey(r.sg);
-        const hits = map[key] || map[String(r.sg).trim()] || [];
-        // Prefer GUIDs: scan again via convert — store runtime→guid through properties if present
-        for (const h of hits) {
-          // h = {modelId, id}; we need GUID — fetch one batch later; stash runtime for now
-          if (!r._runtimes) r._runtimes = [];
-          r._runtimes.push(h);
-        }
-        if (hits.length) filled++;
-      }
-      // Convert runtime ids to GUIDs
-      for (const r of rows) {
-        if (!r._runtimes || !r._runtimes.length) continue;
+      async function runtimesToGuids(runtimes) {
         const byModel = {};
-        for (const h of r._runtimes) (byModel[h.modelId] = byModel[h.modelId] || []).push(h.id);
-        const guids = r.guids || (r.guids = []);
+        for (const h of runtimes) (byModel[h.modelId] = byModel[h.modelId] || []).push(h.id);
+        const guids = [];
         for (const [mid, ids] of Object.entries(byModel)) {
           for (const part of TCLib.chunk(ids, BATCH)) {
             const gids = await api.viewer.convertToObjectIds(mid, part);
             (gids || []).forEach(g => { if (g && !guids.includes(g)) guids.push(g); });
           }
         }
-        delete r._runtimes;
+        return guids;
       }
-      // Rebuild items after fill
+      let filledProd = 0, addedSg = 0;
+      if (needProd) {
+        const { map } = TCLib.buildProdMap(scanned);
+        for (const r of rows) {
+          if (r.kind !== "prod" || (r.guids && r.guids.length)) continue;
+          const key = TCLib.ppCsvKey(r.sg);
+          const hits = map[key] || map[String(r.sg).trim()] || [];
+          if (!hits.length) continue;
+          const guids = r.guids || (r.guids = []);
+          for (const g of await runtimesToGuids(hits)) if (!guids.includes(g)) guids.push(g);
+          if (hits.length) filledProd++;
+        }
+        log(`N° résolus depuis le modèle : ${filledProd} feuilles`, filledProd ? "ok" : "err");
+      }
+      if (needSg) {
+        const { map, props } = TCLib.buildSubGroupMap(scanned);
+        log(`Sub-group lus via : ${Object.entries(props).map(([k, n]) => k + " (" + n + ")").join(", ") || "aucune"} — ${Object.keys(map).length} groupes`);
+        for (const r of rows) {
+          if ((r.kind || "subgroup") === "prod") continue;
+          const hits = map[r.sg] || map[String(r.display || "").trim()] || [];
+          if (!hits.length) continue;
+          const guids = r.guids || (r.guids = []);
+          const before = guids.length;
+          for (const g of await runtimesToGuids(hits)) if (!guids.includes(g)) guids.push(g);
+          addedSg += guids.length - before;
+        }
+        log(`Sub-group modèle : +${addedSg} GUIDs ajoutés aux Cadres`, addedSg ? "ok" : "");
+      }
       parsed.items = [];
       for (const row of rows) {
         for (const guid of row.guids || []) {
           parsed.items.push({ guid, color: row.color, value: (row.display || row.sg) + " — " + row.label, key: row.sg, kind: row.kind });
         }
       }
-      log(`N° résolus depuis le modèle : ${filled} feuilles`, filled ? "ok" : "err");
     }
 
     const items = parsed.items || [];
@@ -383,7 +394,12 @@
     const mode = $("mode").value, allSel = [], legend = $("legend"); legend.innerHTML = "";
     let found = 0;
     // Colour + legend per sheet key (subgroup or production N°)
-    const sorted = rows.slice().sort((a, b) => String(a.display || a.sg).localeCompare(String(b.display || b.sg), "fr", { numeric: true }));
+    const statusRank = { todo: 0, started: 1, done: 2 };
+    const sorted = rows.slice().sort((a, b) => {
+      const d = (statusRank[a.status] || 0) - (statusRank[b.status] || 0);
+      if (d) return d;
+      return String(a.display || a.sg).localeCompare(String(b.display || b.sg), "fr", { numeric: true });
+    });
     for (const row of sorted) {
       const guids = row.guids || [];
       if (!guids.length) continue;
