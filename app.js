@@ -63,13 +63,19 @@
     return TCLib.normalizeImport(rows);
   }
   const VALIDE = "#00AA00";
+  function setText(id, text) {
+    const el = $(id); if (el) el.textContent = text;
+  }
   async function scanAll() {
     const mos = await api.viewer.getObjects(); const all = [];
     const total = mos.reduce((s, m) => s + m.objects.length, 0); let done = 0;
     for (const m of mos) for (const part of TCLib.chunk(m.objects.map(o => o.id), BATCH)) {
       const props = await api.viewer.getObjectProperties(m.modelId, part);
       props.forEach(p => all.push(Object.assign({ modelId: m.modelId }, p)));
-      done += part.length; $("scanProg").textContent = `Analyse : ${done}/${total}`;
+      done += part.length;
+      setText("scanProg", `Analyse : ${done}/${total}`);
+      if (done === part.length || done === total || done % (BATCH * 4) === 0)
+        log(`Analyse modèle : ${done}/${total}`);
     }
     return all;
   }
@@ -368,13 +374,18 @@
       for (const m of mos) for (const part of TCLib.chunk(m.objects.map(o => o.id), BATCH)) {
         const props = await api.viewer.getObjectProperties(m.modelId, part);
         props.forEach(p => all.push(Object.assign({ modelId: m.modelId }, p)));
-        done += part.length; $("scanProg").textContent = `Analyse : ${done}/${total}`;
+        done += part.length; setText("scanProg", `Analyse : ${done}/${total}`);
       }
-      scanned = all; const sel = $("attr"), cur = sel.value; sel.innerHTML = "";
-      const lbl = { Nom: "Nom", Materiau: "Matériau", Classe: "Classe IFC" };
-      TCLib.attributeKeys(all).forEach(k => { const o = document.createElement("option"); o.value = k; o.textContent = lbl[k] || k; sel.appendChild(o); });
-      if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
-      log(`${all.length} objets analysés, ${sel.options.length} attributs`, "ok");
+      scanned = all; const sel = $("attr");
+      if (sel) {
+        const cur = sel.value; sel.innerHTML = "";
+        const lbl = { Nom: "Nom", Materiau: "Matériau", Classe: "Classe IFC" };
+        TCLib.attributeKeys(all).forEach(k => { const o = document.createElement("option"); o.value = k; o.textContent = lbl[k] || k; sel.appendChild(o); });
+        if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+        log(`${all.length} objets analysés, ${sel.options.length} attributs`, "ok");
+      } else {
+        log(`${all.length} objets analysés`, "ok");
+      }
     } catch (e) { err("Analyse", e); }
   }
   async function colorBy() {
