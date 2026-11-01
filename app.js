@@ -61,11 +61,12 @@
       lastImportName = (file && file.name) || lastImportName;
       return { text, name: lastImportName || "import" };
     } catch (e) {
-      clearFilePicker();
       if (lastImportText) {
+        // Keep the file input selected; browser still shows the name even if disk handle is stale
         log("Fichier illisible après écrasement/verrouillage — relecture depuis la mémoire. Re-choisissez le fichier pour la version à jour.", "err");
-        return { text: lastImportText, name: lastImportName || "import", fromCache: true };
+        return { text: lastImportText, name: lastImportName || (file && file.name) || "import", fromCache: true };
       }
+      clearFilePicker();
       throw new Error("Fichier illisible — choisissez-le à nouveau (souvent après enregistrement sur le même chemin).");
     }
   }
