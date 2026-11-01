@@ -903,8 +903,48 @@
       await applyCsvFromConnect(true);
     } catch (e) { err("Appliquer CSV", e); }
   }
+  async function restoreMainViewer(prevViewName, prevViewId, cam) {
+    // After both shared views are saved: leave the live main viewer colour-clean
+    // (Avancement / Suprema keep their snapshots; do not re-select them here).
+    try {
+      await clearSubgroupLabels();
+      try {
+        if (api.markup && api.markup.getTextMarkups && api.markup.removeMarkups) {
+          const all = await api.markup.getTextMarkups();
+          const ids = (all || []).map(m => m && m.id).filter(id => id != null);
+          if (ids.length) await api.markup.removeMarkups(ids);
+        }
+      } catch (e) { /* ignore */ }
+      try {
+        if (api.viewer && api.viewer.removeIcon) await api.viewer.removeIcon();
+      } catch (e) { /* ignore */ }
+      lastSgMarkupIds = [];
+      lastSgIcons = [];
+      try {
+        await api.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
+      } catch (e) { err("Reset couleurs vue principale", e); }
+      try {
+        await api.viewer.setObjectState(undefined, { visible: true });
+      } catch (e) { /* ignore */ }
+      if (cam) {
+        try { await api.viewer.setCamera(cam); } catch (e) { /* ignore */ }
+      }
+      log("Couleurs de la vue principale réinitialisées (vues Avancement/Suprema inchangées)", "ok");
+    } catch (e) { err("Restaurer vue principale", e); }
+  }
   async function refreshFromConnect() {
-    log("Actualisation Connect : atelier + CSV…");
+    log("Actualisation Connect : atelier + CSV (arrière-plan)…");
+    let prevViewId = null, prevViewName = null, cam = null;
+    try {
+      if (api.view && api.view.getCurrentView) {
+        const cur = await api.view.getCurrentView();
+        if (cur) {
+          prevViewId = cur.id || cur.viewId || null;
+          prevViewName = cur.name || cur.title || null;
+        }
+      }
+    } catch (e) { /* ignore */ }
+    try { cam = await api.viewer.getCamera(); } catch (e) { /* ignore */ }
     let atelierOk = false, csvOk = false;
     try {
       await applyAtelierFromConnect(false);
@@ -919,6 +959,7 @@
       await applyCsvFromConnect(true);
       csvOk = true;
     } catch (e) { err("Actualiser CSV", e); }
+    await restoreMainViewer(prevViewName, prevViewId, cam);
     if (atelierOk || csvOk) log("Sync Connect terminée (atelier " + (atelierOk ? "ok" : "—") + ", CSV " + (csvOk ? "ok" : "—") + ")", "ok");
   }
   function setAutoRefresh(on) {
