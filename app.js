@@ -2,7 +2,7 @@
 (function () {
   const BATCH = 500;
   const $ = id => document.getElementById(id);
-  let api = null, lastFile = null, lastImportText = null, lastImportName = null, lastCsvText = null, lastCsvName = "ECHALLENS.csv";
+  let api = null, lastFile = null, lastFileHandle = null, lastImportText = null, lastImportName = null, lastCsvText = null, lastCsvName = "ECHALLENS.csv";
   let lastAtelier = null, lastSgMarkupIds = [], lastSgIcons = [], lastColorMode = null;
   const CONNECT_CSV = { projectId: "ehtiK26Yuww", parentId: "9hDaTpAXRng", fileName: "ECHALLENS.csv", base: "https://app21.connect.trimble.com/tc/api/2.0" };
   let autoTimer = null;
@@ -49,38 +49,108 @@
       await exportObjs(mos.map(m => ({ modelId: m.modelId, objectRuntimeIds: m.objects.map(o => o.id) })), "modele");
     } catch (e) { err("Export modèle", e); }
   }
+  function setFileLabel(name) {
+    const el = $("fileLabel");
+    if (el) el.textContent = name || "Aucun fichier choisi";
+  }
   function clearFilePicker() {
     const inp = $("file");
     if (inp) inp.value = "";
     lastFile = null;
+    lastFileHandle = null;
+    setFileLabel(null);
   }
-  async function readFileText(file) {
-    try {
-      const text = await file.text();
-      lastImportText = text;
-      lastImportName = (file && file.name) || lastImportName;
-      return { text, name: lastImportName || "import" };
-    } catch (e) {
-      if (lastImportText) {
-        // Keep the file input selected; browser still shows the name even if disk handle is stale
-        log("Fichier illisible après écrasement/verrouillage — relecture depuis la mémoire. Re-choisissez le fichier pour la version à jour.", "err");
-        return { text: lastImportText, name: lastImportName || (file && file.name) || "import", fromCache: true };
+  async function ensureFileHandlePermission(handle) {
+    if (!handle || !handle.queryPermission) return true;
+    let st = await handle.queryPermission({ mode: "read" });
+    if (st === "granted") return true;
+    if (handle.requestPermission) st = await handle.requestPermission({ mode: "read" });
+    return st === "granted";
+  }
+  async function pickImportFile() {
+    if (typeof window.showOpenFilePicker === "function") {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          multiple: false,
+          types: [{
+            description: "CSV / JSON / HTML",
+            accept: {
+              "text/html": [".html", ".htm"],
+              "text/csv": [".csv", ".txt"],
+              "application/json": [".json"],
+              "text/plain": [".txt", ".csv", ".html", ".htm", ".json"]
+            }
+          }]
+        });
+        lastFileHandle = handle;
+        if (!(await ensureFileHandlePermission(handle)))
+          throw new Error("Permission de lecture refusée");
+        const f = await handle.getFile();
+        lastFile = f;
+        lastImportText = await f.text();
+        lastImportName = f.name;
+        setFileLabel(f.name + " (relecture disque)");
+        log("Fichier prêt : " + f.name + " — Appliquer relira le disque après chaque enregistrement", "ok");
+        return;
+      } catch (e) {
+        if (e && e.name === "AbortError") return;
+        // Fall through to hidden <input> if FSA blocked in iframe
+        err("Choix fichier (API)", e);
       }
-      clearFilePicker();
-      throw new Error("Fichier illisible — choisissez-le à nouveau (souvent après enregistrement sur le même chemin).");
     }
+    const inp = $("file");
+    if (inp) inp.click();
   }
-  async function readImport(file) {
-    let text, name;
-    if (file) {
-      const r = await readFileText(file);
-      text = r.text; name = r.name;
-    } else if (lastImportText) {
-      text = lastImportText; name = lastImportName || "import";
-      log("Pas de fichier sélectionné — relecture du dernier HTML/CSV en mémoire", "ok");
-    } else {
-      throw new Error("Choisir un fichier");
+  async function resolveImportSource() {
+    // Prefer File System Access handle — getFile() always sees the latest on-disk bytes
+    if (lastFileHandle) {
+      try {
+        if (!(await ensureFileHandlePermission(lastFileHandle)))
+          throw new Error("Permission de lecture expirée — re-choisissez le fichier");
+        const f = await lastFileHandle.getFile();
+        const text = await f.text();
+        lastFile = f;
+        lastImportText = text;
+        lastImportName = f.name;
+        setFileLabel(f.name + " (relecture disque)");
+        return { text, name: f.name, fresh: true };
+      } catch (e) {
+        log("Relecture disque échouée : " + (e && e.message || e) + " — re-choisissez le fichier", "err");
+        lastFileHandle = null;
+      }
     }
+    const f = ($("file") && $("file").files[0]) || lastFile;
+    if (f) {
+      try {
+        const text = await f.text();
+        lastImportText = text;
+        lastImportName = f.name || lastImportName;
+        return { text, name: lastImportName || "import", fresh: true };
+      } catch (e) {
+        // Stale <input> File after overwrite — ask again under this click (user gesture)
+        if (typeof window.showOpenFilePicker === "function") {
+          log("Fichier modifié sur le disque — choisissez-le à nouveau pour charger la version enregistrée…", "err");
+          const before = lastFileHandle;
+          await pickImportFile();
+          if (lastFileHandle && lastFileHandle !== before)
+            return resolveImportSource();
+        }
+        if (lastImportText) {
+          log("Fichier illisible — ancienne version en mémoire (re-choisir le fichier pour la version enregistrée)", "err");
+          return { text: lastImportText, name: lastImportName || "import", fresh: false };
+        }
+        clearFilePicker();
+        throw new Error("Fichier illisible — choisissez-le à nouveau après enregistrement.");
+      }
+    }
+    if (lastImportText) {
+      log("Pas de fichier sélectionné — relecture du dernier HTML/CSV en mémoire", "ok");
+      return { text: lastImportText, name: lastImportName || "import", fresh: false };
+    }
+    throw new Error("Choisir un fichier");
+  }
+  async function readImport() {
+    const { text, name } = await resolveImportSource();
     if (TCLib.isAtelierHtml(text, name)) {
       return { atelier: TCLib.parseAtelierHtml(text) };
     }
@@ -596,9 +666,10 @@
 
   async function applyImport() {
     try {
-      const f = ($("file") && $("file").files[0]) || lastFile;
-      if (!f && !lastImportText) { log("Choisir un fichier", "err"); return; }
-      const items = await readImport(f);
+      if (!lastFileHandle && !(($("file") && $("file").files[0]) || lastFile) && !lastImportText) {
+        log("Choisir un fichier", "err"); return;
+      }
+      const items = await readImport();
       if (items.atelier) { await applyAtelier(items.atelier); return; }
       if (items.suprema) { await applySuprema(items.suprema); return; }
       log(`${items.length} lignes avec GUID lues`);
@@ -719,13 +790,16 @@
   }
   const on = (id, ev, fn) => { const el = $(id); if (el) el[ev] = fn; };
   on("btnSel", "onclick", exportSelection); on("btnAll", "onclick", exportAll);
+  on("btnPickFile", "onclick", pickImportFile);
   on("file", "onchange", async () => {
+    lastFileHandle = null; // plain <input> cannot re-read after overwrite
     lastFile = $("file").files[0] || null;
-    if (!lastFile) return;
+    if (!lastFile) { setFileLabel(null); return; }
     try {
       lastImportText = await lastFile.text();
       lastImportName = lastFile.name;
-      log("Fichier prêt : " + lastImportName, "ok");
+      setFileLabel(lastFile.name + " (re-choisir après enregistrement)");
+      log("Fichier prêt : " + lastImportName + " — après enregistrement, re-choisissez-le (ou utilisez Choisir… pour relecture auto)", "ok");
     } catch (e) {
       clearFilePicker();
       err("Lecture fichier", e);
@@ -736,6 +810,6 @@
   on("autoRefresh", "onchange", () => setAutoRefresh($("autoRefresh").checked));
   on("btnReset", "onclick", reset);
   on("btnScan", "onclick", scan); on("btnColorBy", "onclick", colorBy); on("btnShowAll", "onclick", showAll); on("btnColorSel", "onclick", colorSelection);
-  window.__TCAPP__ = { scan, colorBy, showAll, colorSelection, applyImport, applyAtelier, refreshFromConnect, syncStatusView, openStatusView, exportAll, exportSelection, reset, setFile: f => (lastFile = f) };
+  window.__TCAPP__ = { scan, colorBy, showAll, colorSelection, applyImport, applyAtelier, refreshFromConnect, syncStatusView, openStatusView, exportAll, exportSelection, reset, pickImportFile, setFile: f => (lastFile = f) };
   init();
 })();

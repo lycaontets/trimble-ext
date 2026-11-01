@@ -17,7 +17,9 @@ select,input{width:100%;margin:2px 0}
 <ul id="models"></ul>
 <h2>Import CSV/JSON/HTML</h2>
 <div style="font-size:11px;color:#555">HTML plans atelier → Appliquer : couleurs Avancement (bleu / jaune / vert) + pastilles (sous-groupe Cadre…, ou N° production pour les pièces uniques), placées sur les pièces. CSV Suprema → Actualiser (vert Validé). Auto CSV se coupe après Appliquer HTML.</div>
-<input type="file" id="file" accept=".csv,.json,.txt,.html,.htm">
+<button type="button" id="btnPickFile" class="sec">Choisir un fichier…</button>
+<input type="file" id="file" accept=".csv,.json,.txt,.html,.htm" style="display:none">
+<div id="fileLabel" style="font-size:11px;color:#555;margin:2px 0 6px;word-break:break-all">Aucun fichier choisi</div>
 <label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px"><input type="checkbox" id="sgLabels" style="width:auto" checked> Libellés sous-groupe / N° (comme dans le HTML)</label>
 <label>Action :</label>
 <select id="mode"><option value="color">Colorer</option><option value="select">Sélectionner</option><option value="isolate">Isoler</option></select>
