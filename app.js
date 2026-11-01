@@ -2,7 +2,7 @@
 (function () {
   const BATCH = 500;
   const $ = id => document.getElementById(id);
-  let api = null, lastFile = null, lastCsvText = null, lastCsvName = "ECHALLENS.csv";
+  let api = null, lastFile = null, lastImportText = null, lastImportName = null, lastCsvText = null, lastCsvName = "ECHALLENS.csv";
   let lastAtelier = null, lastSgMarkupIds = [], lastSgIcons = [], lastColorMode = null;
   const CONNECT_CSV = { projectId: "ehtiK26Yuww", parentId: "9hDaTpAXRng", fileName: "ECHALLENS.csv", base: "https://app21.connect.trimble.com/tc/api/2.0" };
   let autoTimer = null;
@@ -49,13 +49,42 @@
       await exportObjs(mos.map(m => ({ modelId: m.modelId, objectRuntimeIds: m.objects.map(o => o.id) })), "modele");
     } catch (e) { err("Export modèle", e); }
   }
+  function clearFilePicker() {
+    const inp = $("file");
+    if (inp) inp.value = "";
+    lastFile = null;
+  }
+  async function readFileText(file) {
+    try {
+      const text = await file.text();
+      lastImportText = text;
+      lastImportName = (file && file.name) || lastImportName;
+      return { text, name: lastImportName || "import" };
+    } catch (e) {
+      clearFilePicker();
+      if (lastImportText) {
+        log("Fichier illisible après écrasement/verrouillage — relecture depuis la mémoire. Re-choisissez le fichier pour la version à jour.", "err");
+        return { text: lastImportText, name: lastImportName || "import", fromCache: true };
+      }
+      throw new Error("Fichier illisible — choisissez-le à nouveau (souvent après enregistrement sur le même chemin).");
+    }
+  }
   async function readImport(file) {
-    const text = await file.text();
-    if (TCLib.isAtelierHtml(text, file.name)) {
+    let text, name;
+    if (file) {
+      const r = await readFileText(file);
+      text = r.text; name = r.name;
+    } else if (lastImportText) {
+      text = lastImportText; name = lastImportName || "import";
+      log("Pas de fichier sélectionné — relecture du dernier HTML/CSV en mémoire", "ok");
+    } else {
+      throw new Error("Choisir un fichier");
+    }
+    if (TCLib.isAtelierHtml(text, name)) {
       return { atelier: TCLib.parseAtelierHtml(text) };
     }
     let rows;
-    if (/\.json$/i.test(file.name) || /^\s*[[{]/.test(text)) {
+    if (/\.json$/i.test(name) || /^\s*[[{]/.test(text)) {
       const j = JSON.parse(text); rows = Array.isArray(j) ? j : (j.items || j.objects || []);
       rows = rows.map(r => Object.assign({}, r, r.guid && !r.GUID ? { GUID: r.guid } : {}));
     } else rows = TCLib.parseCSV(text);
@@ -566,7 +595,8 @@
 
   async function applyImport() {
     try {
-      const f = $("file").files[0] || lastFile; if (!f) { log("Choisir un fichier", "err"); return; }
+      const f = ($("file") && $("file").files[0]) || lastFile;
+      if (!f && !lastImportText) { log("Choisir un fichier", "err"); return; }
       const items = await readImport(f);
       if (items.atelier) { await applyAtelier(items.atelier); return; }
       if (items.suprema) { await applySuprema(items.suprema); return; }
@@ -688,7 +718,18 @@
   }
   const on = (id, ev, fn) => { const el = $(id); if (el) el[ev] = fn; };
   on("btnSel", "onclick", exportSelection); on("btnAll", "onclick", exportAll);
-  on("file", "onchange", () => { lastFile = $("file").files[0] || lastFile; });
+  on("file", "onchange", async () => {
+    lastFile = $("file").files[0] || null;
+    if (!lastFile) return;
+    try {
+      lastImportText = await lastFile.text();
+      lastImportName = lastFile.name;
+      log("Fichier prêt : " + lastImportName, "ok");
+    } catch (e) {
+      clearFilePicker();
+      err("Lecture fichier", e);
+    }
+  });
   on("btnApply", "onclick", applyImport); on("btnRefreshConnect", "onclick", refreshFromConnect);
   on("btnOpenView", "onclick", openStatusView);
   on("autoRefresh", "onchange", () => setAutoRefresh($("autoRefresh").checked));
