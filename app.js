@@ -11,6 +11,15 @@
   let lastFile = null, lastFileHandle = null, lastImportText = null, lastImportName = null;
   const CONNECT_CSV = { projectId: "ehtiK26Yuww", parentId: "9hDaTpAXRng", fileName: "ECHALLENS.csv", base: "https://app21.connect.trimble.com/tc/api/2.0" };
   let autoTimer = null;
+  let lockedCamera = null; // during dual sync: never change the user's zoom
+  async function holdCamera() {
+    if (!lockedCamera || !api || !api.viewer || !api.viewer.setCamera) return;
+    try {
+      await api.viewer.setCamera(lockedCamera, { animationTime: 0 });
+    } catch (e) {
+      try { await api.viewer.setCamera(lockedCamera); } catch (e2) { /* ignore */ }
+    }
+  }
   function log(msg, cls) {
     const d = document.createElement("div"); d.className = cls || "";
     d.textContent = new Date().toLocaleTimeString("fr-CH") + " " + msg; $("log").appendChild(d); $("log").scrollTop = 1e9;
@@ -205,18 +214,10 @@
         if (bySg && $("sgLabels") && $("sgLabels").checked && !lastSgMarkupIds.length)
           await placeSubgroupLabels(bySg);
       }
-      // Let the viewer flush colour/markup state before snapshot
       await new Promise(r => setTimeout(r, 400));
       const views = await api.view.getViews();
       let v = (views || []).find(x => (x.name || x.title) === name);
-      // CSV: delete + recreate so an old atelier snapshot cannot stick
-      if (kind === "csv" && v && api.view.deleteView) {
-        try {
-          await api.view.deleteView(v.id);
-          log(`Ancienne vue supprimée : ${name}`, "ok");
-          v = null;
-        } catch (e) { err("Suppression vue CSV", e); }
-      }
+      // Prefer updateView (no select/zoom). Recreate only if missing.
       if (!v) {
         v = await api.view.createView({ name });
         log(`Vue créée : ${name}`, "ok");
@@ -224,6 +225,7 @@
         await api.view.updateView({ id: v.id });
         log(`Vue mise à jour : ${name}`, "ok");
       }
+      await holdCamera();
     } catch (e) { err("Vue partagée", e); }
   }
   async function openStatusView(kind) {
@@ -588,7 +590,7 @@
     return n;
   }
   async function wipeViewerColors() {
-    log("Reset complet des couleurs (entre Avancement et Suprema)…");
+    log("Reset couleurs (zoom inchangé)…");
     await clearSubgroupLabels();
     try {
       if (api.markup && api.markup.getTextMarkups && api.markup.removeMarkups) {
@@ -602,25 +604,13 @@
     } catch (e) { /* ignore */ }
     lastSgMarkupIds = [];
     lastSgIcons = [];
-
-    let cam = null;
-    try { cam = await api.viewer.getCamera(); } catch (e) { /* ignore */ }
-
-    // Nuclear: viewer.reset() clears model colours to defaults
-    if (typeof api.viewer.reset === "function") {
-      try {
-        await api.viewer.reset();
-        log("viewer.reset() OK", "ok");
-      } catch (e) { err("viewer.reset", e); }
-    }
+    // Do NOT call viewer.reset() — it changes the camera/zoom
     try {
       await api.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
     } catch (e) { err("Reset couleurs", e); }
     try {
       await api.viewer.setObjectState(undefined, { visible: true });
     } catch (e) { /* ignore */ }
-
-    // Reset any leftover colored objects explicitly
     try {
       if (api.viewer.getColoredObjects) {
         const colored = await api.viewer.getColoredObjects();
@@ -636,17 +626,12 @@
         if (n) log("Couleurs restantes effacées : " + n + " objets", "ok");
       }
     } catch (e) { err("Reset objets colorés", e); }
-
-    // Force every object to neutral grey in batches (overrides any leftover atelier colour)
     try {
       const n = await paintAllObjects("#D0D0D0");
       log("Affichage neutre (gris) : " + n + " objets", "ok");
     } catch (e) { err("Neutre gris avant CSV", e); }
-
-    if (cam) {
-      try { await api.viewer.setCamera(cam); } catch (e) { /* ignore */ }
-    }
-    await new Promise(r => setTimeout(r, 300));
+    await holdCamera();
+    await new Promise(r => setTimeout(r, 200));
   }
   async function applySuprema(rows) {
     lastColorMode = "suprema";
@@ -903,9 +888,8 @@
       await applyCsvFromConnect(true);
     } catch (e) { err("Appliquer CSV", e); }
   }
-  async function restoreMainViewer(prevViewName, prevViewId, cam) {
-    // After both shared views are saved: leave the live main viewer colour-clean
-    // (Avancement / Suprema keep their snapshots; do not re-select them here).
+  async function restoreMainViewer() {
+    // After both shared views are saved: colour-clean main viewer, zoom untouched
     try {
       await clearSubgroupLabels();
       try {
@@ -921,45 +905,32 @@
       lastSgMarkupIds = [];
       lastSgIcons = [];
       try {
-        await api.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
+        await api.viewer.setObjectState(undefined, { color: "reset" });
       } catch (e) { err("Reset couleurs vue principale", e); }
-      try {
-        await api.viewer.setObjectState(undefined, { visible: true });
-      } catch (e) { /* ignore */ }
-      if (cam) {
-        try { await api.viewer.setCamera(cam); } catch (e) { /* ignore */ }
-      }
-      log("Couleurs de la vue principale réinitialisées (vues Avancement/Suprema inchangées)", "ok");
+      await holdCamera();
+      log("Couleurs de la vue principale réinitialisées (zoom inchangé)", "ok");
     } catch (e) { err("Restaurer vue principale", e); }
   }
   async function refreshFromConnect() {
-    log("Actualisation Connect : atelier + CSV (arrière-plan)…");
-    let prevViewId = null, prevViewName = null, cam = null;
-    try {
-      if (api.view && api.view.getCurrentView) {
-        const cur = await api.view.getCurrentView();
-        if (cur) {
-          prevViewId = cur.id || cur.viewId || null;
-          prevViewName = cur.name || cur.title || null;
-        }
-      }
-    } catch (e) { /* ignore */ }
-    try { cam = await api.viewer.getCamera(); } catch (e) { /* ignore */ }
+    log("Actualisation Connect : atelier + CSV (zoom verrouillé)…");
+    lockedCamera = null;
+    try { lockedCamera = await api.viewer.getCamera(); } catch (e) { /* ignore */ }
     let atelierOk = false, csvOk = false;
     try {
       await applyAtelierFromConnect(false);
       atelierOk = true;
+      await holdCamera();
     } catch (e) { err("Actualiser atelier", e); }
-    // Hard break between the two view snapshots
     log("Reset couleurs entre Avancement et Suprema…");
     try { await wipeViewerColors(); } catch (e) { err("Reset entre vues", e); }
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 300));
     try {
-      // Always force CSV after atelier so Suprema view is green-only
       await applyCsvFromConnect(true);
       csvOk = true;
+      await holdCamera();
     } catch (e) { err("Actualiser CSV", e); }
-    await restoreMainViewer(prevViewName, prevViewId, cam);
+    await restoreMainViewer();
+    lockedCamera = null;
     if (atelierOk || csvOk) log("Sync Connect terminée (atelier " + (atelierOk ? "ok" : "—") + ", CSV " + (csvOk ? "ok" : "—") + ")", "ok");
   }
   function setAutoRefresh(on) {
