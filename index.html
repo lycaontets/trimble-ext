@@ -11,27 +11,43 @@ button.sec{background:#666}
 .err{color:#b00}.ok{color:#070}
 #legend div,#attrLegend div{display:flex;align-items:center;gap:6px}.sw{width:14px;height:14px;display:inline-block;border:1px solid #999}
 select,input{width:100%;margin:2px 0}
+.hint{font-size:11px;color:#555;margin:2px 0 6px}
 </style></head><body>
 <h2>Projet</h2>
 <div id="project">Connexion…</div>
 <ul id="models"></ul>
-<h2>Import CSV/JSON/HTML</h2>
-<div style="font-size:11px;color:#555">HTML plans atelier et CSV Suprema vivent dans le même dossier Connect (watcher local). <b>Appliquer</b> / Auto (30 s) rechargent depuis Connect — plus besoin de re-choisir le fichier après enregistrement. Choix local = secours hors ligne.</div>
-<label style="font-size:12px">Fichier atelier Connect (vide = nom du modèle + _plans_atelier.atelier)</label>
-<input id="htmlConnectName" placeholder="ex. 7126103_…_plans_atelier.atelier" style="font-size:12px">
-<button type="button" id="btnPickFile" class="sec">Choisir un fichier local…</button>
-<input type="file" id="file" accept=".csv,.json,.txt,.html,.htm,.atelier" style="display:none">
-<div id="fileLabel" style="font-size:11px;color:#555;margin:2px 0 6px;word-break:break-all">Source : Connect (recommandé)</div>
-<label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px"><input type="checkbox" id="sgLabels" style="width:auto" checked> Libellés sous-groupe / N° (comme dans le HTML)</label>
+
 <label>Action :</label>
 <select id="mode"><option value="color">Colorer</option><option value="select">Sélectionner</option><option value="isolate">Isoler</option></select>
-<button id="btnApply">Appliquer (Connect)</button>
-<button id="btnRefreshConnect">Actualiser depuis Connect</button>
-<label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px"><input type="checkbox" id="autoRefresh" style="width:auto"> Auto (30 s) — HTML ou CSV Connect</label>
-<label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px"><input type="checkbox" id="syncView" style="width:auto" checked> Mettre à jour la vue partagée</label>
-<label style="font-size:12px">Nom de la vue</label>
-<input id="viewName" value="Suprema Validé" style="font-size:12px">
-<button id="btnOpenView" class="sec">Ouvrir la vue partagée</button>
+<label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px"><input type="checkbox" id="syncView" style="width:auto" checked> Mettre à jour les vues partagées</label>
+
+<h2>Atelier (plans)</h2>
+<div class="hint">Fichier Connect <b>*_plans_atelier.atelier</b> (même dossier que le CSV). Appliquer colore + met à jour la vue atelier.</div>
+<label style="font-size:12px">Fichier atelier Connect (vide = nom du modèle + _plans_atelier.atelier)</label>
+<input id="htmlConnectName" placeholder="ex. 7126103_…_plans_atelier.atelier" style="font-size:12px">
+<button type="button" id="btnPickAtelier" class="sec">Choisir un atelier local…</button>
+<input type="file" id="fileAtelier" accept=".html,.htm,.atelier" style="display:none">
+<div id="atelierFileLabel" class="hint">Source : Connect</div>
+<label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px"><input type="checkbox" id="sgLabels" style="width:auto" checked> Libellés sous-groupe / N°</label>
+<label style="font-size:12px">Nom de la vue atelier</label>
+<input id="viewNameAtelier" value="Avancement feuilles" style="font-size:12px">
+<button id="btnApplyAtelier">Appliquer atelier (Connect)</button>
+<button id="btnOpenViewAtelier" class="sec">Ouvrir la vue atelier</button>
+
+<h2>CSV Suprema</h2>
+<div class="hint">Fichier Connect <b>ECHALLENS.csv</b>. Appliquer colore Validé + met à jour la vue CSV (sans libellés atelier).</div>
+<button type="button" id="btnPickCsv" class="sec">Choisir un CSV local…</button>
+<input type="file" id="fileCsv" accept=".csv,.txt,.json" style="display:none">
+<div id="csvFileLabel" class="hint">Source : Connect — ECHALLENS.csv</div>
+<label style="font-size:12px">Nom de la vue CSV</label>
+<input id="viewNameCsv" value="Suprema Validé" style="font-size:12px">
+<button id="btnApplyCsv">Appliquer CSV (Connect)</button>
+<button id="btnOpenViewCsv" class="sec">Ouvrir la vue CSV</button>
+
+<h2>Sync</h2>
+<div class="hint">Actualiser / Auto rechargent <b>atelier + CSV</b> depuis Connect et mettent à jour les deux vues.</div>
+<button id="btnRefreshConnect">Actualiser les deux depuis Connect</button>
+<label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px"><input type="checkbox" id="autoRefresh" style="width:auto"> Auto (30 s) — atelier + CSV</label>
 <button id="btnReset" class="sec">Réinitialiser l'affichage</button>
 <div id="legend"></div>
 <div id="scanProg" style="font-size:11px;color:#555;min-height:1.2em"></div>

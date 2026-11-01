@@ -2,9 +2,13 @@
 (function () {
   const BATCH = 500;
   const $ = id => document.getElementById(id);
-  let api = null, lastFile = null, lastFileHandle = null, lastImportText = null, lastImportName = null, lastCsvText = null, lastCsvName = "ECHALLENS.csv";
+  let api = null;
+  let lastAtelierText = null, lastAtelierName = null, lastAtelierHandle = null;
+  let lastCsvText = null, lastCsvName = "ECHALLENS.csv", lastCsvHandle = null;
   let lastAtelier = null, lastSgMarkupIds = [], lastSgIcons = [], lastColorMode = null;
-  let lastHtmlVersionId = null, lastHtmlName = null, preferConnectHtml = true;
+  let lastHtmlVersionId = null, lastHtmlName = null, lastCsvVersionId = null;
+  // legacy aliases used by leftover local-import helpers
+  let lastFile = null, lastFileHandle = null, lastImportText = null, lastImportName = null;
   const CONNECT_CSV = { projectId: "ehtiK26Yuww", parentId: "9hDaTpAXRng", fileName: "ECHALLENS.csv", base: "https://app21.connect.trimble.com/tc/api/2.0" };
   let autoTimer = null;
   function log(msg, cls) {
@@ -50,17 +54,21 @@
       await exportObjs(mos.map(m => ({ modelId: m.modelId, objectRuntimeIds: m.objects.map(o => o.id) })), "modele");
     } catch (e) { err("Export modèle", e); }
   }
-  function setFileLabel(name) {
-    const el = $("fileLabel");
-    if (el) el.textContent = name || "Aucun fichier choisi";
-  }
   function clearFilePicker() {
-    const inp = $("file");
-    if (inp) inp.value = "";
-    lastFile = null;
-    lastFileHandle = null;
-    setFileLabel(null);
+    lastFile = null; lastFileHandle = null; lastAtelierHandle = null; lastCsvHandle = null;
+    const a = $("fileAtelier"); if (a) a.value = "";
+    const c = $("fileCsv"); if (c) c.value = "";
+    setAtelierFileLabel(null); setCsvFileLabel(null);
   }
+    function setAtelierFileLabel(name) {
+    const el = $("atelierFileLabel");
+    if (el) el.textContent = name || "Source : Connect";
+  }
+  function setCsvFileLabel(name) {
+    const el = $("csvFileLabel");
+    if (el) el.textContent = name || "Source : Connect — ECHALLENS.csv";
+  }
+  function setFileLabel(name) { setAtelierFileLabel(name); }
   async function ensureFileHandlePermission(handle) {
     if (!handle || !handle.queryPermission) return true;
     let st = await handle.queryPermission({ mode: "read" });
@@ -68,40 +76,38 @@
     if (handle.requestPermission) st = await handle.requestPermission({ mode: "read" });
     return st === "granted";
   }
-  async function pickImportFile() {
+  async function pickLocalFile(kind) {
+    const isAtelier = kind === "atelier";
+    const acceptTypes = isAtelier
+      ? { description: "Atelier HTML", accept: { "text/html": [".html", ".htm"], "text/plain": [".atelier", ".html", ".htm"] } }
+      : { description: "CSV / JSON", accept: { "text/csv": [".csv", ".txt"], "application/json": [".json"], "text/plain": [".csv", ".txt", ".json"] } };
     if (typeof window.showOpenFilePicker === "function") {
       try {
-        const [handle] = await window.showOpenFilePicker({
-          multiple: false,
-          types: [{
-            description: "CSV / JSON / HTML",
-            accept: {
-              "text/html": [".html", ".htm"],
-              "text/csv": [".csv", ".txt"],
-              "application/json": [".json"],
-              "text/plain": [".txt", ".csv", ".html", ".htm", ".json"]
-            }
-          }]
-        });
-        lastFileHandle = handle;
+        const [handle] = await window.showOpenFilePicker({ multiple: false, types: [acceptTypes] });
         if (!(await ensureFileHandlePermission(handle)))
           throw new Error("Permission de lecture refusée");
         const f = await handle.getFile();
-        lastFile = f;
-        lastImportText = await f.text();
-        lastImportName = f.name;
-        setFileLabel(f.name + " (relecture disque)");
-        log("Fichier prêt : " + f.name + " — Appliquer relira le disque après chaque enregistrement", "ok");
+        const text = await f.text();
+        if (isAtelier) {
+          lastAtelierHandle = handle; lastAtelierText = text; lastAtelierName = f.name;
+          lastImportText = text; lastImportName = f.name; lastFileHandle = handle; lastFile = f;
+          setAtelierFileLabel(f.name + " (local)");
+        } else {
+          lastCsvHandle = handle; lastCsvText = text; lastCsvName = f.name;
+          lastFileHandle = handle; lastFile = f;
+          setCsvFileLabel(f.name + " (local)");
+        }
+        log("Fichier prêt : " + f.name, "ok");
         return;
       } catch (e) {
         if (e && e.name === "AbortError") return;
-        // Fall through to hidden <input> if FSA blocked in iframe
         err("Choix fichier (API)", e);
       }
     }
-    const inp = $("file");
+    const inp = $(isAtelier ? "fileAtelier" : "fileCsv");
     if (inp) inp.click();
   }
+  async function pickImportFile() { return pickLocalFile("atelier"); }
   async function resolveImportSource() {
     // Prefer File System Access handle — getFile() always sees the latest on-disk bytes
     if (lastFileHandle) {
@@ -181,18 +187,24 @@
     return all;
   }
 
-  function statusViewName() {
-    const el = $("viewName");
+  function statusViewName(kind) {
+    if (kind === "atelier") {
+      const el = $("viewNameAtelier");
+      return (el && el.value.trim()) || "Avancement feuilles";
+    }
+    const el = $("viewNameCsv");
     return (el && el.value.trim()) || "Suprema Validé";
   }
-  async function syncStatusView() {
+  async function syncStatusView(kind) {
     if ($("syncView") && !$("syncView").checked) return;
     if (!api || !api.view) { log("API vues indisponible", "err"); return; }
-    const name = statusViewName();
+    const name = statusViewName(kind || "csv");
     try {
-      const bySg = (lastAtelier && lastAtelier.bySg) || loadAtelierCache();
-      if (bySg && $("sgLabels") && $("sgLabels").checked && !lastSgMarkupIds.length)
-        await placeSubgroupLabels(bySg);
+      if (kind === "atelier") {
+        const bySg = (lastAtelier && lastAtelier.bySg) || loadAtelierCache();
+        if (bySg && $("sgLabels") && $("sgLabels").checked && !lastSgMarkupIds.length)
+          await placeSubgroupLabels(bySg);
+      }
       const views = await api.view.getViews();
       let v = (views || []).find(x => (x.name || x.title) === name);
       if (!v) {
@@ -204,13 +216,13 @@
       }
     } catch (e) { err("Vue partagée", e); }
   }
-  async function openStatusView() {
+  async function openStatusView(kind) {
     try {
       if (!api || !api.view) throw new Error("API vues indisponible");
-      const name = statusViewName();
+      const name = statusViewName(kind || "csv");
       const views = await api.view.getViews();
       const v = (views || []).find(x => (x.name || x.title) === name);
-      if (!v) throw new Error("Vue introuvable : " + name + " — cochez « Mettre à jour la vue » puis Actualiser d'abord");
+      if (!v) throw new Error("Vue introuvable : " + name + " — Appliquer d'abord avec « Mettre à jour les vues »");
       await api.view.selectView(v.id);
       log(`Vue ouverte : ${name}`, "ok");
     } catch (e) { err("Ouvrir vue", e); }
@@ -420,9 +432,6 @@
   async function applyAtelier(parsed) {
     lastAtelier = parsed;
     lastColorMode = "atelier";
-    // Auto (30 s) now refreshes HTML from Connect when in atelier mode
-    if ($("viewName") && (!$("viewName").value.trim() || $("viewName").value.trim() === "Suprema Validé"))
-      $("viewName").value = "Avancement feuilles";
     const rows = Object.values(parsed.bySg || {});
     const counts = { todo: 0, started: 0, done: 0 };
     rows.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
@@ -548,11 +557,11 @@
     if (mode === "color") {
       saveAtelierCache(parsed.bySg);
       await placeSubgroupLabels(parsed.bySg);
-      await syncStatusView();
+      await syncStatusView("atelier");
     }
   }
 
-    async function applySuprema(rows) {
+  async function applySuprema(rows) {
     lastColorMode = "suprema";
     const models = await api.viewer.getModels("loaded"); const names = models.map(m => m.name || "");
     try { const p = await api.project.getProject(); if (p && p.name) names.push(p.name); } catch (e) { /* ignore */ }
@@ -580,8 +589,8 @@
       d.lastChild.textContent = `Validé (${items.length} pièces, ${matched} N°)`; legend.appendChild(d);
       log(`${matched} N° trouvés, ${items.length} pièces traitées (${mode}) en Validé`, "ok");
       if (mode === "color") {
-        await ensureSubgroupLabelsBeforeView();
-        await syncStatusView();
+        await clearSubgroupLabels();
+        await syncStatusView("csv");
       }
     }
     if (unmatched.length) log(`${unmatched.length} N° absents du modèle : ${unmatched.sort((a, b) => parseInt(a) - parseInt(b)).join(", ")}`);
@@ -659,113 +668,169 @@
     lastHtmlName = d.name;
     lastImportText = d.text;
     lastImportName = d.name;
-    setFileLabel("Connect : " + d.name);
+    setAtelierFileLabel("Connect : " + d.name);
     const el = $("htmlConnectName");
     if (el && !el.value.trim()) el.value = d.name;
     return d;
   }
+  async function applyGuidColorGroups(items) {
+    log(`${items.length} lignes avec GUID lues`);
+    const groups = TCLib.buildGroups(items);
+    const models = await api.viewer.getModels("loaded");
+    const mode = $("mode").value, allSel = [], legend = $("legend"); legend.innerHTML = "";
+    let found = 0;
+    for (const [color, g] of Object.entries(groups)) {
+      const mois = [];
+      for (const m of models) {
+        const rids = [];
+        for (const part of TCLib.chunk(g.guids, BATCH)) {
+          const r = await api.viewer.convertToObjectRuntimeIds(m.id, part);
+          r.forEach(x => { if (x !== undefined && x !== null && x >= 0) rids.push(x); });
+        }
+        if (rids.length) mois.push({ modelId: m.id, objectRuntimeIds: rids });
+      }
+      const cnt = mois.reduce((s, m) => s + m.objectRuntimeIds.length, 0); found += cnt;
+      allSel.push(...mois);
+      if (cnt && mode === "color") await api.viewer.setObjectState({ modelObjectIds: mois }, { color });
+      const d = document.createElement("div");
+      d.innerHTML = `<span class="sw" style="background:${color}"></span><span></span>`;
+      d.lastChild.textContent = `${g.label} (${cnt}/${g.guids.length})`; legend.appendChild(d);
+    }
+    if (!found) { log("Aucun GUID trouvé dans les modèles chargés", "err"); return; }
+    if (mode === "select") await api.viewer.setSelection({ modelObjectIds: allSel }, "set");
+    if (mode === "isolate") {
+      await api.viewer.setObjectState(undefined, { visible: false });
+      await api.viewer.setObjectState({ modelObjectIds: allSel }, { visible: true });
+    }
+    log(`${found} objets trouvés et traités (${mode})`, "ok");
+    if (mode === "color") await syncStatusView("csv");
+  }
   async function applyCsvText(text, name) {
     lastCsvText = text; lastCsvName = name || lastCsvName;
+    setCsvFileLabel((name || lastCsvName) + " (mémoire)");
     let rows;
     if (/^\s*[[{]/.test(text)) {
       const j = JSON.parse(text); rows = Array.isArray(j) ? j : (j.items || j.objects || []);
       rows = rows.map(r => Object.assign({}, r, r.guid && !r.GUID ? { GUID: r.guid } : {}));
-      const items = TCLib.normalizeImport(rows);
-      // reuse GUID path via temp
-      lastFile = new File([text], name || "import.json", { type: "application/json" });
-      await applyImport();
+      await applyGuidColorGroups(TCLib.normalizeImport(rows));
       return;
     }
     rows = TCLib.parseCSV(text);
     if (TCLib.isSupremaRows(rows)) { await applySuprema(rows); return; }
-    lastFile = new File([text], name || "import.csv", { type: "text/csv" });
-    await applyImport();
+    await applyGuidColorGroups(TCLib.normalizeImport(rows));
   }
   async function applyAtelierFromConnect(force) {
-    log("Téléchargement HTML atelier depuis Connect…");
+    log("Téléchargement atelier depuis Connect…");
     const d = await downloadConnectHtml();
     if (!force && d.versionId && d.versionId === lastHtmlVersionId) {
-      log("HTML Connect inchangé (même version)", "ok");
+      log("Atelier Connect inchangé (même version)", "ok");
       return false;
     }
     if (!TCLib.isAtelierHtml(d.text, d.name))
-      throw new Error("Le fichier Connect n'est pas un HTML atelier : " + d.name);
+      throw new Error("Le fichier Connect n'est pas un atelier : " + d.name);
     lastHtmlVersionId = d.versionId || ("sha:" + d.text.length);
-    preferConnectHtml = true;
+    lastAtelierText = d.text; lastAtelierName = d.name;
     await applyAtelier(TCLib.parseAtelierHtml(d.text));
-    log("HTML Connect appliqué : " + d.name, "ok");
+    log("Atelier Connect appliqué : " + d.name, "ok");
     return true;
   }
-  async function refreshFromConnect() {
+  async function applyCsvFromConnect(force) {
+    log("Téléchargement CSV depuis Connect…");
+    const d = await downloadConnectCsv();
+    if (!force && d.versionId && d.versionId === lastCsvVersionId) {
+      log("CSV Connect inchangé (même version)", "ok");
+      return false;
+    }
+    lastCsvVersionId = d.versionId || ("sha:" + d.text.length);
+    setCsvFileLabel("Connect : " + d.name);
+    await applyCsvText(d.text, d.name);
+    log("CSV Connect appliqué : " + d.name, "ok");
+    return true;
+  }
+  async function applyAtelierButton() {
     try {
-      if (lastColorMode === "atelier" || preferConnectHtml) {
-        await applyAtelierFromConnect(false);
+      if (lastAtelierText && lastAtelierHandle) {
+        try {
+          if (await ensureFileHandlePermission(lastAtelierHandle)) {
+            const f = await lastAtelierHandle.getFile();
+            lastAtelierText = await f.text();
+            lastAtelierName = f.name;
+            setAtelierFileLabel(f.name + " (local)");
+            if (!TCLib.isAtelierHtml(lastAtelierText, lastAtelierName))
+              throw new Error("Pas un fichier atelier : " + lastAtelierName);
+            await applyAtelier(TCLib.parseAtelierHtml(lastAtelierText));
+            return;
+          }
+        } catch (e) { log("Local atelier : " + (e && e.message || e) + " — Connect…", "err"); }
+      }
+      if (lastAtelierText && !lastAtelierHandle) {
+        // native input / memory fallback
+        const inp = $("fileAtelier");
+        const f = inp && inp.files && inp.files[0];
+        if (f) {
+          lastAtelierText = await f.text();
+          lastAtelierName = f.name;
+        }
+        if (TCLib.isAtelierHtml(lastAtelierText, lastAtelierName)) {
+          await applyAtelier(TCLib.parseAtelierHtml(lastAtelierText));
+          return;
+        }
+      }
+      await applyAtelierFromConnect(true);
+    } catch (e) { err("Appliquer atelier", e); }
+  }
+  async function applyCsvButton() {
+    try {
+      if (lastCsvHandle) {
+        try {
+          if (await ensureFileHandlePermission(lastCsvHandle)) {
+            const f = await lastCsvHandle.getFile();
+            lastCsvText = await f.text();
+            lastCsvName = f.name;
+            setCsvFileLabel(f.name + " (local)");
+            await applyCsvText(lastCsvText, lastCsvName);
+            return;
+          }
+        } catch (e) { log("Local CSV : " + (e && e.message || e) + " — Connect…", "err"); }
+      }
+      const inp = $("fileCsv");
+      const f = inp && inp.files && inp.files[0];
+      if (f) {
+        lastCsvText = await f.text();
+        lastCsvName = f.name;
+        await applyCsvText(lastCsvText, lastCsvName);
         return;
       }
-      log("Actualisation CSV depuis Connect…");
-      const d = await downloadConnectCsv();
-      await applyCsvText(d.text, d.name);
-      log("Couleurs CSV actualisées", "ok");
-    } catch (e) { err("Actualiser Connect", e); }
+      if (lastCsvText && lastCsvName && lastCsvName !== "ECHALLENS.csv") {
+        await applyCsvText(lastCsvText, lastCsvName);
+        return;
+      }
+      await applyCsvFromConnect(true);
+    } catch (e) { err("Appliquer CSV", e); }
+  }
+  async function refreshFromConnect() {
+    log("Actualisation Connect : atelier + CSV…");
+    let atelierOk = false, csvOk = false;
+    try {
+      await applyAtelierFromConnect(false);
+      atelierOk = true;
+    } catch (e) { err("Actualiser atelier", e); }
+    try {
+      await applyCsvFromConnect(false);
+      csvOk = true;
+    } catch (e) { err("Actualiser CSV", e); }
+    if (atelierOk || csvOk) log("Sync Connect terminée (atelier " + (atelierOk ? "ok" : "—") + ", CSV " + (csvOk ? "ok" : "—") + ")", "ok");
   }
   function setAutoRefresh(on) {
     if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
     if (!on) return;
     autoTimer = setInterval(() => refreshFromConnect(), 30000);
-    log("Auto-refresh Connect (HTML ou CSV) toutes les 30 s", "ok");
+    log("Auto-refresh Connect (atelier + CSV) toutes les 30 s", "ok");
   }
 
   async function applyImport() {
-    try {
-      // Prefer Connect HTML (iframe cannot re-read a local overwrite)
-      if (preferConnectHtml || !(($("file") && $("file").files[0]) || lastFile || lastFileHandle)) {
-        try {
-          await applyAtelierFromConnect(true);
-          return;
-        } catch (eConnect) {
-          if (!(($("file") && $("file").files[0]) || lastFile || lastFileHandle || lastImportText)) {
-            err("Import Connect", eConnect); return;
-          }
-          log("Connect HTML indisponible — secours fichier local : " + (eConnect && eConnect.message || eConnect), "err");
-        }
-      }
-      if (!lastFileHandle && !(($("file") && $("file").files[0]) || lastFile) && !lastImportText) {
-        log("Choisir un fichier ou lancez le watcher Connect", "err"); return;
-      }
-      const items = await readImport();
-      if (items.atelier) { preferConnectHtml = false; await applyAtelier(items.atelier); return; }
-      if (items.suprema) { await applySuprema(items.suprema); return; }
-      log(`${items.length} lignes avec GUID lues`);
-      const groups = TCLib.buildGroups(items);
-      const models = await api.viewer.getModels("loaded");
-      const mode = $("mode").value, allSel = [], legend = $("legend"); legend.innerHTML = "";
-      let found = 0;
-      for (const [color, g] of Object.entries(groups)) {
-        const mois = [];
-        for (const m of models) {
-          const rids = [];
-          for (const part of TCLib.chunk(g.guids, BATCH)) {
-            const r = await api.viewer.convertToObjectRuntimeIds(m.id, part);
-            r.forEach(x => { if (x !== undefined && x !== null && x >= 0) rids.push(x); });
-          }
-          if (rids.length) mois.push({ modelId: m.id, objectRuntimeIds: rids });
-        }
-        const cnt = mois.reduce((s, m) => s + m.objectRuntimeIds.length, 0); found += cnt;
-        allSel.push(...mois);
-        if (cnt && mode === "color") await api.viewer.setObjectState({ modelObjectIds: mois }, { color });
-        const d = document.createElement("div");
-        d.innerHTML = `<span class="sw" style="background:${color}"></span><span></span>`;
-        d.lastChild.textContent = `${g.label} (${cnt}/${g.guids.length})`; legend.appendChild(d);
-      }
-      if (!found) { log("Aucun GUID trouvé dans les modèles chargés", "err"); return; }
-      if (mode === "select") await api.viewer.setSelection({ modelObjectIds: allSel }, "set");
-      if (mode === "isolate") {
-        await api.viewer.setObjectState(undefined, { visible: false });
-        await api.viewer.setObjectState({ modelObjectIds: allSel }, { visible: true });
-      }
-      log(`${found} objets trouvés et traités (${mode})`, "ok");
-      if (mode === "color") await syncStatusView();
-    } catch (e) { err("Import", e); }
+    // Back-compat: same as Appliquer atelier
+    return applyAtelierButton();
   }
   async function reset() {
     try {
@@ -773,7 +838,9 @@
       lastColorMode = null;
       await api.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
       await api.viewer.setSelection({ modelObjectIds: [] }, "set");
-      $("legend").innerHTML = ""; $("attrLegend").innerHTML = ""; log("Affichage réinitialisé", "ok");
+      $("legend").innerHTML = "";
+      const al = $("attrLegend"); if (al) al.innerHTML = "";
+      log("Affichage réinitialisé", "ok");
     } catch (e) { err("Réinitialisation", e); }
   }
   // ---- Colorer par ----
@@ -803,7 +870,8 @@
     try {
       if (!scanned) await scan(); if (!scanned) return;
       attrGroups = TCLib.groupByAttr(scanned, $("attr").value);
-      const leg = $("attrLegend"); leg.innerHTML = "";
+      const leg = $("attrLegend"); if (!leg) return;
+      leg.innerHTML = "";
       for (const [val, g] of Object.entries(attrGroups)) {
         await api.viewer.setObjectState(TCLib.toSelector(g.items), { color: g.color, visible: true });
         const d = document.createElement("div");
@@ -853,26 +921,39 @@
   }
   const on = (id, ev, fn) => { const el = $(id); if (el) el[ev] = fn; };
   on("btnSel", "onclick", exportSelection); on("btnAll", "onclick", exportAll);
-  on("btnPickFile", "onclick", pickImportFile);
-  on("file", "onchange", async () => {
-    lastFileHandle = null; // plain <input> cannot re-read after overwrite
-    lastFile = $("file").files[0] || null;
-    if (!lastFile) { setFileLabel(null); return; }
+  on("btnPickAtelier", "onclick", () => pickLocalFile("atelier"));
+  on("btnPickCsv", "onclick", () => pickLocalFile("csv"));
+  on("fileAtelier", "onchange", async () => {
+    lastAtelierHandle = null;
+    const f = $("fileAtelier").files[0] || null;
+    if (!f) { setAtelierFileLabel(null); return; }
     try {
-      lastImportText = await lastFile.text();
-      lastImportName = lastFile.name;
-      setFileLabel(lastFile.name + " (re-choisir après enregistrement)");
-      log("Fichier prêt : " + lastImportName + " — après enregistrement, re-choisissez-le (ou utilisez Choisir… pour relecture auto)", "ok");
-    } catch (e) {
-      clearFilePicker();
-      err("Lecture fichier", e);
-    }
+      lastAtelierText = await f.text();
+      lastAtelierName = f.name;
+      lastImportText = lastAtelierText; lastImportName = lastAtelierName;
+      setAtelierFileLabel(f.name + " (local)");
+      log("Atelier local prêt : " + f.name, "ok");
+    } catch (e) { err("Lecture atelier", e); }
   });
-  on("btnApply", "onclick", applyImport); on("btnRefreshConnect", "onclick", refreshFromConnect);
-  on("btnOpenView", "onclick", openStatusView);
+  on("fileCsv", "onchange", async () => {
+    lastCsvHandle = null;
+    const f = $("fileCsv").files[0] || null;
+    if (!f) { setCsvFileLabel(null); return; }
+    try {
+      lastCsvText = await f.text();
+      lastCsvName = f.name;
+      setCsvFileLabel(f.name + " (local)");
+      log("CSV local prêt : " + f.name, "ok");
+    } catch (e) { err("Lecture CSV", e); }
+  });
+  on("btnApplyAtelier", "onclick", applyAtelierButton);
+  on("btnApplyCsv", "onclick", applyCsvButton);
+  on("btnRefreshConnect", "onclick", refreshFromConnect);
+  on("btnOpenViewAtelier", "onclick", () => openStatusView("atelier"));
+  on("btnOpenViewCsv", "onclick", () => openStatusView("csv"));
   on("autoRefresh", "onchange", () => setAutoRefresh($("autoRefresh").checked));
   on("btnReset", "onclick", reset);
   on("btnScan", "onclick", scan); on("btnColorBy", "onclick", colorBy); on("btnShowAll", "onclick", showAll); on("btnColorSel", "onclick", colorSelection);
-  window.__TCAPP__ = { scan, colorBy, showAll, colorSelection, applyImport, applyAtelier, refreshFromConnect, syncStatusView, openStatusView, exportAll, exportSelection, reset, pickImportFile, setFile: f => (lastFile = f) };
+  window.__TCAPP__ = { scan, colorBy, showAll, colorSelection, applyImport, applyAtelier, applyAtelierButton, applyCsvButton, refreshFromConnect, syncStatusView, openStatusView, exportAll, exportSelection, reset, pickImportFile, pickLocalFile, setFile: f => (lastFile = f) };
   init();
 })();
