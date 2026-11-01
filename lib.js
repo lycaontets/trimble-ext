@@ -370,9 +370,9 @@
     return { annotations: ann, sheets, bySg, items, pieceIndexCount: pieces.length, labelKind: kind };
   }
   function isAtelierHtml(text, name) {
-    if (name && /\.html?$/i.test(name)) return true;
+    if (name && /\.(html?|atelier)$/i.test(name)) return true;
     if (!text) return false;
-    return /class=["'][^"']*\bpiece-index\b/i.test(text) || /id=["']annotations["']/i.test(text);
+    return /class=["'][^"']*\bpiece-index\b/i.test(text) || /id=["']annotations["']/i.test(text) || /\bpiece-index\b/i.test(text);
   }
 
   g.TCLib = { ppCsvKey, isSupremaRows, siteTokens, ppCsvParse, prodNoOf, buildProdMap, subGroupOf, buildSubGroupMap, parseCSV, normalizeImport, buildGroups, flattenObject, toCSV, chunk, csvEscape, attributeKeys, groupByAttr, toSelector, SHEET_STATUS, parseAtelierHtml, isAtelierHtml, sheetStatusOf, aggSheetStatus };

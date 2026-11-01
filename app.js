@@ -636,7 +636,7 @@
       const m = (ms || [])[0];
       if (m && m.name) {
         const base = String(m.name).replace(/\.ifc$/i, "").trim();
-        if (base) return base + "_plans_atelier.html";
+        if (base) return base + "_plans_atelier.atelier";
       }
     } catch (_) { /* ignore */ }
     return null;
@@ -645,7 +645,7 @@
     let name = await resolveAtelierHtmlName();
     if (!name) {
       const files = await listConnectFolderFiles();
-      const htmls = files.filter(f => /_plans_atelier\.html$/i.test(f.name) || /\.html?$/i.test(f.name));
+      const htmls = files.filter(f => /_plans_atelier\.(atelier|html?)$/i.test(f.name) || /\.atelier$/i.test(f.name) || /\.html?$/i.test(f.name));
       if (htmls.length === 1) name = htmls[0].name;
       else if (htmls.length > 1) {
         const ms = await api.viewer.getModels("loaded");
