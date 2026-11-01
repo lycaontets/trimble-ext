@@ -16,16 +16,18 @@ select,input{width:100%;margin:2px 0}
 <div id="project">Connexion…</div>
 <ul id="models"></ul>
 <h2>Import CSV/JSON/HTML</h2>
-<div style="font-size:11px;color:#555">HTML plans atelier → Appliquer : couleurs Avancement (bleu / jaune / vert) + pastilles (sous-groupe Cadre…, ou N° production pour les pièces uniques), placées sur les pièces. CSV Suprema → Actualiser (vert Validé). Auto CSV se coupe après Appliquer HTML.</div>
-<button type="button" id="btnPickFile" class="sec">Choisir un fichier…</button>
+<div style="font-size:11px;color:#555">HTML plans atelier et CSV Suprema vivent dans le même dossier Connect (watcher local). <b>Appliquer</b> / Auto (30 s) rechargent depuis Connect — plus besoin de re-choisir le fichier après enregistrement. Choix local = secours hors ligne.</div>
+<label style="font-size:12px">Fichier HTML Connect (vide = nom du modèle + _plans_atelier.html)</label>
+<input id="htmlConnectName" placeholder="ex. 7126103_…_plans_atelier.html" style="font-size:12px">
+<button type="button" id="btnPickFile" class="sec">Choisir un fichier local…</button>
 <input type="file" id="file" accept=".csv,.json,.txt,.html,.htm" style="display:none">
-<div id="fileLabel" style="font-size:11px;color:#555;margin:2px 0 6px;word-break:break-all">Aucun fichier choisi</div>
+<div id="fileLabel" style="font-size:11px;color:#555;margin:2px 0 6px;word-break:break-all">Source : Connect (recommandé)</div>
 <label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px"><input type="checkbox" id="sgLabels" style="width:auto" checked> Libellés sous-groupe / N° (comme dans le HTML)</label>
 <label>Action :</label>
 <select id="mode"><option value="color">Colorer</option><option value="select">Sélectionner</option><option value="isolate">Isoler</option></select>
-<button id="btnApply">Appliquer</button>
-<button id="btnRefreshConnect">Actualiser couleurs (Connect)</button>
-<label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px"><input type="checkbox" id="autoRefresh" style="width:auto"> Auto (30 s) — couleurs seulement</label>
+<button id="btnApply">Appliquer (Connect)</button>
+<button id="btnRefreshConnect">Actualiser depuis Connect</button>
+<label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px"><input type="checkbox" id="autoRefresh" style="width:auto"> Auto (30 s) — HTML ou CSV Connect</label>
 <label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px"><input type="checkbox" id="syncView" style="width:auto" checked> Mettre à jour la vue partagée</label>
 <label style="font-size:12px">Nom de la vue</label>
 <input id="viewName" value="Suprema Validé" style="font-size:12px">

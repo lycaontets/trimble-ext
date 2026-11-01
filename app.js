@@ -4,6 +4,7 @@
   const $ = id => document.getElementById(id);
   let api = null, lastFile = null, lastFileHandle = null, lastImportText = null, lastImportName = null, lastCsvText = null, lastCsvName = "ECHALLENS.csv";
   let lastAtelier = null, lastSgMarkupIds = [], lastSgIcons = [], lastColorMode = null;
+  let lastHtmlVersionId = null, lastHtmlName = null, preferConnectHtml = true;
   const CONNECT_CSV = { projectId: "ehtiK26Yuww", parentId: "9hDaTpAXRng", fileName: "ECHALLENS.csv", base: "https://app21.connect.trimble.com/tc/api/2.0" };
   let autoTimer = null;
   function log(msg, cls) {
@@ -419,12 +420,7 @@
   async function applyAtelier(parsed) {
     lastAtelier = parsed;
     lastColorMode = "atelier";
-    // Keep HTML colours — Auto CSV would overwrite them every 30 s
-    if ($("autoRefresh") && $("autoRefresh").checked) {
-      $("autoRefresh").checked = false;
-      setAutoRefresh(false);
-      log("Auto CSV désactivé pour garder les couleurs / libellés HTML", "ok");
-    }
+    // Auto (30 s) now refreshes HTML from Connect when in atelier mode
     if ($("viewName") && (!$("viewName").value.trim() || $("viewName").value.trim() === "Suprema Validé"))
       $("viewName").value = "Avancement feuilles";
     const rows = Object.values(parsed.bySg || {});
@@ -605,23 +601,68 @@
     if (!r.ok) throw new Error((body && (body.message || body.detail || body.title)) || ("HTTP " + r.status));
     return body;
   }
-  async function downloadConnectCsv() {
+  async function listConnectFolderFiles() {
     let items = await connectFetch(`/folders/${CONNECT_CSV.parentId}/items`);
     if (items && !Array.isArray(items)) items = items.data || items.items || items.files || [];
-    const f = (items || []).find(it => (it.type === "FILE" || String(it.type).toUpperCase() === "FILE") && it.name === CONNECT_CSV.fileName);
-    if (!f) throw new Error("Fichier " + CONNECT_CSV.fileName + " introuvable dans Connect (lancez le watcher)");
-    const tok = await getAccessToken();
+    return (items || []).filter(it => (it.type === "FILE" || String(it.type).toUpperCase() === "FILE"));
+  }
+  async function downloadConnectFile(fileName) {
+    const files = await listConnectFolderFiles();
+    const f = files.find(it => it.name === fileName);
+    if (!f) throw new Error("Fichier " + fileName + " introuvable dans Connect (lancez WatchConnect.bat / le watcher)");
     let url = f.downloadURL || f.downloadUrl || f.url;
     if (!url) {
       const dl = await connectFetch(`/files/fs/${f.id}/downloadurl`);
       url = (typeof dl === "string" ? dl : (dl && (dl.url || dl.downloadURL || dl.downloadUrl))) || null;
     }
-    if (!url) throw new Error("Pas d'URL de téléchargement pour " + CONNECT_CSV.fileName);
+    if (!url) throw new Error("Pas d'URL de téléchargement pour " + fileName);
     const r = await fetch(url, { redirect: "follow" });
-    if (!r.ok) throw new Error("Téléchargement CSV HTTP " + r.status);
+    if (!r.ok) throw new Error("Téléchargement HTTP " + r.status + " (" + fileName + ")");
     const text = await r.text();
-    lastCsvText = text; lastCsvName = f.name;
-    return { text, name: f.name, id: f.id, versionId: f.versionId };
+    return { text, name: f.name, id: f.id, versionId: f.versionId || f.version_id || null, size: f.size };
+  }
+  async function downloadConnectCsv() {
+    const d = await downloadConnectFile(CONNECT_CSV.fileName);
+    lastCsvText = d.text; lastCsvName = d.name;
+    return d;
+  }
+  async function resolveAtelierHtmlName() {
+    const el = $("htmlConnectName");
+    const typed = el && el.value.trim();
+    if (typed) return typed;
+    if (lastHtmlName) return lastHtmlName;
+    try {
+      const ms = await api.viewer.getModels("loaded");
+      const m = (ms || [])[0];
+      if (m && m.name) {
+        const base = String(m.name).replace(/\.ifc$/i, "").trim();
+        if (base) return base + "_plans_atelier.html";
+      }
+    } catch (_) { /* ignore */ }
+    return null;
+  }
+  async function downloadConnectHtml() {
+    let name = await resolveAtelierHtmlName();
+    if (!name) {
+      const files = await listConnectFolderFiles();
+      const htmls = files.filter(f => /_plans_atelier\.html$/i.test(f.name) || /\.html?$/i.test(f.name));
+      if (htmls.length === 1) name = htmls[0].name;
+      else if (htmls.length > 1) {
+        const ms = await api.viewer.getModels("loaded");
+        const tip = ((ms || [])[0] && (ms || [])[0].name || "").replace(/\.ifc$/i, "").toLowerCase();
+        const hit = htmls.find(f => tip && f.name.toLowerCase().includes(tip.slice(0, Math.min(20, tip.length))));
+        if (hit) name = hit.name;
+        else throw new Error("Plusieurs HTML dans Connect — indiquez le nom exact dans le champ HTML Connect");
+      } else throw new Error("Aucun HTML atelier dans Connect — lancez WatchConnect.bat après enregistrement du HTML");
+    }
+    const d = await downloadConnectFile(name);
+    lastHtmlName = d.name;
+    lastImportText = d.text;
+    lastImportName = d.name;
+    setFileLabel("Connect : " + d.name);
+    const el = $("htmlConnectName");
+    if (el && !el.value.trim()) el.value = d.name;
+    return d;
   }
   async function applyCsvText(text, name) {
     lastCsvText = text; lastCsvName = name || lastCsvName;
@@ -640,37 +681,59 @@
     lastFile = new File([text], name || "import.csv", { type: "text/csv" });
     await applyImport();
   }
+  async function applyAtelierFromConnect(force) {
+    log("Téléchargement HTML atelier depuis Connect…");
+    const d = await downloadConnectHtml();
+    if (!force && d.versionId && d.versionId === lastHtmlVersionId) {
+      log("HTML Connect inchangé (même version)", "ok");
+      return false;
+    }
+    if (!TCLib.isAtelierHtml(d.text, d.name))
+      throw new Error("Le fichier Connect n'est pas un HTML atelier : " + d.name);
+    lastHtmlVersionId = d.versionId || ("sha:" + d.text.length);
+    preferConnectHtml = true;
+    await applyAtelier(TCLib.parseAtelierHtml(d.text));
+    log("HTML Connect appliqué : " + d.name, "ok");
+    return true;
+  }
   async function refreshFromConnect() {
     try {
-      if (lastColorMode === "atelier") {
-        log("Mode HTML actif — Actualiser CSV ignoré (recliquez Appliquer sur le HTML, ou Réinitialiser puis Actualiser)");
-        const bySg = (lastAtelier && lastAtelier.bySg) || loadAtelierCache();
-        if (bySg) {
-          await placeSubgroupLabels(bySg);
-          await syncStatusView();
-        }
+      if (lastColorMode === "atelier" || preferConnectHtml) {
+        await applyAtelierFromConnect(false);
         return;
       }
-      log("Actualisation depuis Connect…");
+      log("Actualisation CSV depuis Connect…");
       const d = await downloadConnectCsv();
       await applyCsvText(d.text, d.name);
-      log("Couleurs actualisées (pas de rechargement de page)", "ok");
+      log("Couleurs CSV actualisées", "ok");
     } catch (e) { err("Actualiser Connect", e); }
   }
   function setAutoRefresh(on) {
     if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
     if (!on) return;
     autoTimer = setInterval(() => refreshFromConnect(), 30000);
-    log("Auto-refresh couleurs toutes les 30 s", "ok");
+    log("Auto-refresh Connect (HTML ou CSV) toutes les 30 s", "ok");
   }
 
   async function applyImport() {
     try {
+      // Prefer Connect HTML (iframe cannot re-read a local overwrite)
+      if (preferConnectHtml || !(($("file") && $("file").files[0]) || lastFile || lastFileHandle)) {
+        try {
+          await applyAtelierFromConnect(true);
+          return;
+        } catch (eConnect) {
+          if (!(($("file") && $("file").files[0]) || lastFile || lastFileHandle || lastImportText)) {
+            err("Import Connect", eConnect); return;
+          }
+          log("Connect HTML indisponible — secours fichier local : " + (eConnect && eConnect.message || eConnect), "err");
+        }
+      }
       if (!lastFileHandle && !(($("file") && $("file").files[0]) || lastFile) && !lastImportText) {
-        log("Choisir un fichier", "err"); return;
+        log("Choisir un fichier ou lancez le watcher Connect", "err"); return;
       }
       const items = await readImport();
-      if (items.atelier) { await applyAtelier(items.atelier); return; }
+      if (items.atelier) { preferConnectHtml = false; await applyAtelier(items.atelier); return; }
       if (items.suprema) { await applySuprema(items.suprema); return; }
       log(`${items.length} lignes avec GUID lues`);
       const groups = TCLib.buildGroups(items);
