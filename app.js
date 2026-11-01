@@ -205,8 +205,18 @@
         if (bySg && $("sgLabels") && $("sgLabels").checked && !lastSgMarkupIds.length)
           await placeSubgroupLabels(bySg);
       }
+      // Let the viewer flush colour/markup state before snapshot
+      await new Promise(r => setTimeout(r, 400));
       const views = await api.view.getViews();
       let v = (views || []).find(x => (x.name || x.title) === name);
+      // CSV: delete + recreate so an old atelier snapshot cannot stick
+      if (kind === "csv" && v && api.view.deleteView) {
+        try {
+          await api.view.deleteView(v.id);
+          log(`Ancienne vue supprimée : ${name}`, "ok");
+          v = null;
+        } catch (e) { err("Suppression vue CSV", e); }
+      }
       if (!v) {
         v = await api.view.createView({ name });
         log(`Vue créée : ${name}`, "ok");
@@ -561,8 +571,58 @@
     }
   }
 
+  async function wipeViewerColors() {
+    await clearSubgroupLabels();
+    // Remove any leftover text markups (old Cadre labels from a previous view)
+    try {
+      if (api.markup && api.markup.getTextMarkups && api.markup.removeMarkups) {
+        const all = await api.markup.getTextMarkups();
+        const ids = (all || []).map(m => m && m.id).filter(id => id != null);
+        if (ids.length) await api.markup.removeMarkups(ids);
+      }
+    } catch (e) { /* ignore */ }
+    try {
+      if (api.viewer && api.viewer.removeIcon) await api.viewer.removeIcon();
+    } catch (e) { /* ignore */ }
+    lastSgMarkupIds = [];
+    lastSgIcons = [];
+    try {
+      await api.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
+    } catch (e) { err("Reset couleurs", e); }
+    try {
+      await api.viewer.setObjectState(undefined, { visible: true });
+    } catch (e) { /* ignore */ }
+    // Explicitly reset anything still reported as colored
+    try {
+      if (api.viewer.getColoredObjects) {
+        const colored = await api.viewer.getColoredObjects();
+        let n = 0;
+        for (const m of colored || []) {
+          const rids = (m.objectRuntimeIds || (m.objects || []).map(o => (o && (o.id != null ? o.id : o))) || []).filter(x => x != null);
+          if (!rids.length || !m.modelId) continue;
+          for (const part of TCLib.chunk(rids, BATCH)) {
+            await api.viewer.setObjectState({ modelObjectIds: [{ modelId: m.modelId, objectRuntimeIds: part }] }, { color: "reset" });
+            n += part.length;
+          }
+        }
+        if (n) log("Couleurs atelier effacées : " + n + " objets", "ok");
+      }
+    } catch (e) { err("Reset objets colorés", e); }
+    try {
+      const mos = await api.viewer.getObjects();
+      const all = (mos || []).map(m => ({
+        modelId: m.modelId,
+        objectRuntimeIds: (m.objects || []).map(o => o.id)
+      })).filter(m => m.objectRuntimeIds.length);
+      if (all.length)
+        await api.viewer.setObjectState({ modelObjectIds: all }, { color: "#D0D0D0" });
+      log("Affichage neutre (gris) avant Validé CSV", "ok");
+    } catch (e) { err("Neutre gris avant CSV", e); }
+  }
   async function applySuprema(rows) {
     lastColorMode = "suprema";
+    // Clean slate so Suprema view never keeps atelier HTML colours/labels
+    await wipeViewerColors();
     const models = await api.viewer.getModels("loaded"); const names = models.map(m => m.name || "");
     try { const p = await api.project.getProject(); if (p && p.name) names.push(p.name); } catch (e) { /* ignore */ }
     const tokens = TCLib.siteTokens(names);
@@ -589,7 +649,6 @@
       d.lastChild.textContent = `Validé (${items.length} pièces, ${matched} N°)`; legend.appendChild(d);
       log(`${matched} N° trouvés, ${items.length} pièces traitées (${mode}) en Validé`, "ok");
       if (mode === "color") {
-        await clearSubgroupLabels();
         await syncStatusView("csv");
       }
     }
@@ -815,8 +874,13 @@
       await applyAtelierFromConnect(false);
       atelierOk = true;
     } catch (e) { err("Actualiser atelier", e); }
+    // Hard break between the two view snapshots
+    log("Reset couleurs entre Avancement et Suprema…");
+    try { await wipeViewerColors(); } catch (e) { err("Reset entre vues", e); }
+    await new Promise(r => setTimeout(r, 500));
     try {
-      await applyCsvFromConnect(false);
+      // Always force CSV after atelier so Suprema view is green-only
+      await applyCsvFromConnect(true);
       csvOk = true;
     } catch (e) { err("Actualiser CSV", e); }
     if (atelierOk || csvOk) log("Sync Connect terminée (atelier " + (atelierOk ? "ok" : "—") + ", CSV " + (csvOk ? "ok" : "—") + ")", "ok");
