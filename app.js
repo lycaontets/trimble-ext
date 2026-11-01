@@ -571,9 +571,25 @@
     }
   }
 
+  async function paintAllObjects(color) {
+    const mos = await api.viewer.getObjects();
+    let n = 0;
+    for (const m of mos || []) {
+      const rids = (m.objects || []).map(o => o.id).filter(id => id != null);
+      if (!rids.length) continue;
+      for (const part of TCLib.chunk(rids, BATCH)) {
+        await api.viewer.setObjectState(
+          { modelObjectIds: [{ modelId: m.modelId, objectRuntimeIds: part }] },
+          { color }
+        );
+        n += part.length;
+      }
+    }
+    return n;
+  }
   async function wipeViewerColors() {
+    log("Reset complet des couleurs (entre Avancement et Suprema)…");
     await clearSubgroupLabels();
-    // Remove any leftover text markups (old Cadre labels from a previous view)
     try {
       if (api.markup && api.markup.getTextMarkups && api.markup.removeMarkups) {
         const all = await api.markup.getTextMarkups();
@@ -586,13 +602,25 @@
     } catch (e) { /* ignore */ }
     lastSgMarkupIds = [];
     lastSgIcons = [];
+
+    let cam = null;
+    try { cam = await api.viewer.getCamera(); } catch (e) { /* ignore */ }
+
+    // Nuclear: viewer.reset() clears model colours to defaults
+    if (typeof api.viewer.reset === "function") {
+      try {
+        await api.viewer.reset();
+        log("viewer.reset() OK", "ok");
+      } catch (e) { err("viewer.reset", e); }
+    }
     try {
       await api.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
     } catch (e) { err("Reset couleurs", e); }
     try {
       await api.viewer.setObjectState(undefined, { visible: true });
     } catch (e) { /* ignore */ }
-    // Explicitly reset anything still reported as colored
+
+    // Reset any leftover colored objects explicitly
     try {
       if (api.viewer.getColoredObjects) {
         const colored = await api.viewer.getColoredObjects();
@@ -605,19 +633,20 @@
             n += part.length;
           }
         }
-        if (n) log("Couleurs atelier effacées : " + n + " objets", "ok");
+        if (n) log("Couleurs restantes effacées : " + n + " objets", "ok");
       }
     } catch (e) { err("Reset objets colorés", e); }
+
+    // Force every object to neutral grey in batches (overrides any leftover atelier colour)
     try {
-      const mos = await api.viewer.getObjects();
-      const all = (mos || []).map(m => ({
-        modelId: m.modelId,
-        objectRuntimeIds: (m.objects || []).map(o => o.id)
-      })).filter(m => m.objectRuntimeIds.length);
-      if (all.length)
-        await api.viewer.setObjectState({ modelObjectIds: all }, { color: "#D0D0D0" });
-      log("Affichage neutre (gris) avant Validé CSV", "ok");
+      const n = await paintAllObjects("#D0D0D0");
+      log("Affichage neutre (gris) : " + n + " objets", "ok");
     } catch (e) { err("Neutre gris avant CSV", e); }
+
+    if (cam) {
+      try { await api.viewer.setCamera(cam); } catch (e) { /* ignore */ }
+    }
+    await new Promise(r => setTimeout(r, 300));
   }
   async function applySuprema(rows) {
     lastColorMode = "suprema";
@@ -641,7 +670,14 @@
     if (!items.length) { log("Aucun N° du CSV trouvé dans le modèle", "err"); }
     else {
       const sel = TCLib.toSelector(items).modelObjectIds, mode = $("mode").value;
-      if (mode === "color") await api.viewer.setObjectState({ modelObjectIds: sel }, { color: VALIDE });
+      if (mode === "color") {
+        for (const m of sel) {
+          const rids = m.objectRuntimeIds || [];
+          for (const part of TCLib.chunk(rids, BATCH)) {
+            await api.viewer.setObjectState({ modelObjectIds: [{ modelId: m.modelId, objectRuntimeIds: part }] }, { color: VALIDE });
+          }
+        }
+      }
       if (mode === "select") await api.viewer.setSelection({ modelObjectIds: sel }, "set");
       if (mode === "isolate") { await api.viewer.setObjectState(undefined, { visible: false }); await api.viewer.setObjectState({ modelObjectIds: sel }, { visible: true }); }
       const d = document.createElement("div");
