@@ -11,15 +11,6 @@
   let lastFile = null, lastFileHandle = null, lastImportText = null, lastImportName = null;
   const CONNECT_CSV = { projectId: "ehtiK26Yuww", parentId: "9hDaTpAXRng", fileName: "ECHALLENS.csv", base: "https://app21.connect.trimble.com/tc/api/2.0" };
   let autoTimer = null;
-  let lockedCamera = null; // during dual sync: never change the user's zoom
-  async function holdCamera() {
-    if (!lockedCamera || !api || !api.viewer || !api.viewer.setCamera) return;
-    try {
-      await api.viewer.setCamera(lockedCamera, { animationTime: 0 });
-    } catch (e) {
-      try { await api.viewer.setCamera(lockedCamera); } catch (e2) { /* ignore */ }
-    }
-  }
   function log(msg, cls) {
     const d = document.createElement("div"); d.className = cls || "";
     d.textContent = new Date().toLocaleTimeString("fr-CH") + " " + msg; $("log").appendChild(d); $("log").scrollTop = 1e9;
@@ -214,18 +205,18 @@
         if (bySg && $("sgLabels") && $("sgLabels").checked && !lastSgMarkupIds.length)
           await placeSubgroupLabels(bySg);
       }
-      await new Promise(r => setTimeout(r, 400));
+      await new Promise(r => setTimeout(r, 200));
       const views = await api.view.getViews();
       let v = (views || []).find(x => (x.name || x.title) === name);
-      // Prefer updateView (no select/zoom). Recreate only if missing.
-      if (!v) {
-        v = await api.view.createView({ name });
-        log(`Vue créée : ${name}`, "ok");
-      } else {
+      // updateView only reads the current viewer into the saved view — do not selectView / setCamera
+      if (v) {
         await api.view.updateView({ id: v.id });
         log(`Vue mise à jour : ${name}`, "ok");
+      } else {
+        // First-time only. createView may focus the view in Connect UI; avoid during routine sync if possible.
+        v = await api.view.createView({ name });
+        log(`Vue créée : ${name}`, "ok");
       }
-      await holdCamera();
     } catch (e) { err("Vue partagée", e); }
   }
   async function openStatusView(kind) {
@@ -606,11 +597,8 @@
     lastSgIcons = [];
     // Do NOT call viewer.reset() — it changes the camera/zoom
     try {
-      await api.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
+      await api.viewer.setObjectState(undefined, { color: "reset" });
     } catch (e) { err("Reset couleurs", e); }
-    try {
-      await api.viewer.setObjectState(undefined, { visible: true });
-    } catch (e) { /* ignore */ }
     try {
       if (api.viewer.getColoredObjects) {
         const colored = await api.viewer.getColoredObjects();
@@ -630,7 +618,6 @@
       const n = await paintAllObjects("#D0D0D0");
       log("Affichage neutre (gris) : " + n + " objets", "ok");
     } catch (e) { err("Neutre gris avant CSV", e); }
-    await holdCamera();
     await new Promise(r => setTimeout(r, 200));
   }
   async function applySuprema(rows) {
@@ -907,19 +894,15 @@
       try {
         await api.viewer.setObjectState(undefined, { color: "reset" });
       } catch (e) { err("Reset couleurs vue principale", e); }
-      await holdCamera();
       log("Couleurs de la vue principale réinitialisées (zoom inchangé)", "ok");
     } catch (e) { err("Restaurer vue principale", e); }
   }
   async function refreshFromConnect() {
-    log("Actualisation Connect : atelier + CSV (zoom verrouillé)…");
-    lockedCamera = null;
-    try { lockedCamera = await api.viewer.getCamera(); } catch (e) { /* ignore */ }
+    log("Actualisation Connect : atelier + CSV (sans toucher la caméra)…");
     let atelierOk = false, csvOk = false;
     try {
       await applyAtelierFromConnect(false);
       atelierOk = true;
-      await holdCamera();
     } catch (e) { err("Actualiser atelier", e); }
     log("Reset couleurs entre Avancement et Suprema…");
     try { await wipeViewerColors(); } catch (e) { err("Reset entre vues", e); }
@@ -927,10 +910,8 @@
     try {
       await applyCsvFromConnect(true);
       csvOk = true;
-      await holdCamera();
     } catch (e) { err("Actualiser CSV", e); }
     await restoreMainViewer();
-    lockedCamera = null;
     if (atelierOk || csvOk) log("Sync Connect terminée (atelier " + (atelierOk ? "ok" : "—") + ", CSV " + (csvOk ? "ok" : "—") + ")", "ok");
   }
   function setAutoRefresh(on) {
